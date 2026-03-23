@@ -1,0 +1,60 @@
+{
+  "form": "W-2",
+  "year": 2026,
+  "employee_information": {
+    "employee_ssn": null,
+    "employee_first_name": null,
+    "employee_last_name": null,
+    "suffix": null,
+    "employee_address": null,
+    "employee_city": null,
+    "employee_state": null,
+    "employee_zip": null
+  },
+  "employer_information": {
+    "employer_tin": null,
+    "employer_name": null,
+    "employer_address": null,
+    "employer_city": null,
+    "employer_state": null,
+    "employer_zip": null,
+    "control_number": null
+  },
+  "wage_information": {
+    "box_1_wages_tips_other_compensation": null,
+    "box_2_federal_income_tax_withheld": null,
+    "box_3_social_security_wages": null,
+    "box_4_social_security_tax_withheld": null,
+    "box_5_medicare_wages_and_tips": null,
+    "box_6_medicare_tax_withheld": null,
+    "box_7_social_security_tips": null,
+    "box_8_allocated_tips": null,
+    "box_9": null,
+    "box_10_dependent_care_benefits": null,
+    "box_11_nonqualified_plans": null
+  },
+  "box_12": {
+    "12a": null,
+    "12b": null,
+    "12c": null,
+    "12d": null
+  },
+  "box_13_checkboxes": {
+    "statutory_employee": false,
+    "retirement_plan": false,
+    "third_party_sick_pay": false
+  },
+  "box_14": {
+    "other": null,
+    "occupation_code": null
+  },
+  "state_and_local_tax_information": {
+    "box_15_state": null,
+    "box_15_employer_state_id": null,
+    "box_16_state_wages": null,
+    "box_17_state_income_tax": null,
+    "box_18_local_wages": null,
+    "box_19_local_income_tax": null,
+    "box_20_locality_name": null
+  }
+}

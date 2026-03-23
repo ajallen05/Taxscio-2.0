@@ -1,0 +1,50 @@
+{
+    "form": "1099-MISC",
+    "year": null,
+    "status": {
+        "void": false,
+        "corrected": false
+    },
+    "payer_information": {
+        "payer_name": null,
+        "payer_address": null,
+        "payer_city": null,
+        "payer_state": null,
+        "payer_zip": null,
+        "payer_phone": null,
+        "payer_tin": null
+    },
+    "recipient_information": {
+        "recipient_tin": null,
+        "recipient_name": null,
+        "recipient_address": null,
+        "recipient_city": null,
+        "recipient_state": null,
+        "recipient_zip": null
+    },
+    "income_boxes": {
+        "box_1_rents": null,
+        "box_2_royalties": null,
+        "box_3_other_income": null,
+        "box_4_federal_income_tax_withheld": null,
+        "box_5_fishing_boat_proceeds": null,
+        "box_6_medical_and_health_care_payments": null,
+        "box_7_payer_made_direct_sales_over_5000": false,
+        "box_8_substitute_payments_in_lieu_of_dividends_or_interest": null,
+        "box_9_crop_insurance_proceeds": null,
+        "box_10_gross_proceeds_paid_to_an_attorney": null,
+        "box_11_fish_purchased_for_resale": null,
+        "box_12_section_409A_deferrals": null,
+        "box_13_fatca_filing_requirement": false,
+        "box_14": null,
+        "box_15_nonqualified_deferred_compensation": null
+    },
+    "state_information": {
+        "box_16_state_tax_withheld": null,
+        "box_17_state_payer_state_number": null,
+        "box_18_state_income": null
+    },
+    "additional_information": {
+        "account_number": null
+    }
+}
