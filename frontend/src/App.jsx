@@ -1085,12 +1085,45 @@ function PagePipeline({ files, results, apiUrl }) {
     const [ledgerRows, setLedgerRows] = useState([]);
     const [ledgerError, setLedgerError] = useState(null);
     const [expandedClients, setExpandedClients] = useState(new Set());
+    const [clientsMap, setClientsMap] = useState({});
 
     const toggleClient = (name) => setExpandedClients(prev => {
         const s = new Set(prev);
         s.has(name) ? s.delete(name) : s.add(name);
         return s;
     });
+
+    // ── Fetch client data to build lookup map by name ──────────────────────
+    useEffect(() => {
+        const base = apiUrl !== undefined ? apiUrl : 'http://localhost:8000';
+        
+        async function fetchClients() {
+            try {
+                const res = await fetch(`${base}/clients?limit=1000`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const clients = await res.json();
+                const map = {};
+                clients.forEach(client => {
+                    // Map by both individual and business name
+                    if (client.first_name && client.last_name) {
+                        map[`${client.first_name} ${client.last_name}`] = client;
+                    }
+                    if (client.business_name) {
+                        map[client.business_name] = client;
+                    }
+                    if (client.trust_name) {
+                        map[client.trust_name] = client;
+                    }
+                });
+                setClientsMap(map);
+            } catch (err) {
+                // Silently fail - clients map is optional
+                console.debug('Failed to fetch clients:', err);
+            }
+        }
+        
+        fetchClients();
+    }, [apiUrl]);
 
     // ── Poll the ledger endpoint every 10 s ───────────────────────────────
     useEffect(() => {
@@ -1112,6 +1145,8 @@ function PagePipeline({ files, results, apiUrl }) {
                 const data = await res.json();
                 const rows = data.map(rec => {
                     const pct = rec.confidence_score != null ? Math.round(rec.confidence_score * 100) : null;
+                    const uploadCount = rec.upload_count || 1;
+                    const version = rec.version || 1;
                     return {
                         name: rec.client_name || rec.document_id,
                         form: rec.document_type || '—',
@@ -1122,6 +1157,8 @@ function PagePipeline({ files, results, apiUrl }) {
                         cpa: rec.cpa || '—',
                         due_date: rec.due_date || '—',
                         document_id: rec.document_id,
+                        uploadCount: uploadCount,
+                        version: version,
                         fromLedger: true,
                         borderLeft: mapStatus(rec.status) === 'exception' ? 'var(--red)'
                             : mapStatus(rec.status) === 'approved' ? 'var(--green)' : null,
@@ -1197,6 +1234,8 @@ function PagePipeline({ files, results, apiUrl }) {
             conf: pct, confCls: confClass(r?.document_confidence),
             cpa: '—', due_date: '—', fromLedger: false,
             document_id: r?.document_id,
+            uploadCount: 1,
+            version: 1,
             borderLeft: status === 'exception' ? 'var(--red)' : status === 'approved' ? 'var(--green)' : null,
         };
     });
@@ -1348,6 +1387,10 @@ function PagePipeline({ files, results, apiUrl }) {
                                 const hasDB = rows.some(r => r.fromLedger);
                                 const conf = avgConf(rows);
                                 const confCls = conf != null ? (conf >= 90 ? 'high' : conf >= 75 ? 'medium' : 'low') : '';
+                                
+                                // Get client data from map
+                                const client = clientsMap[clientName];
+                                const clientStage = client?.lifecycle_stage || '—';
 
                                 return (
                                     <React.Fragment key={clientName}>
@@ -1370,13 +1413,13 @@ function PagePipeline({ files, results, apiUrl }) {
                                                     {rows.length}
                                                 </span>
                                             </td>
-                                            <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{mostAdvancedStage(rows)}</td>
+                                            <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{clientStage}</td>
                                             <td>
-                                                {conf != null
-                                                    ? <span className={`confidence-badge ${confCls}`}>{conf}%</span>
-                                                    : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                                                <span style={{ color: 'var(--text-muted)' }}>—</span>
                                             </td>
-                                            <td><StatusPill status={dominantStatus(rows)} /></td>
+                                            <td>
+                                                <span style={{ color: 'var(--text-muted)' }}>—</span>
+                                            </td>
                                         </tr>
 
                                         {/* Child / form rows */}
@@ -1386,10 +1429,12 @@ function PagePipeline({ files, results, apiUrl }) {
                                                 <td style={{ paddingLeft: 32, fontSize: 12, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 8 }}>
                                                     <span style={{ display: 'inline-block', width: 3, height: 3, borderRadius: '50%', background: 'var(--text-muted)' }}></span>
                                                     <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>{r.form}</span>
-                                                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{r.stage}</span>
+                                                    <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 'auto' }}>
+                                                        {(r.uploadCount || 1)} / {(r.version || 1)}
+                                                    </span>
                                                 </td>
                                                 <td></td>
-                                                <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{r.due_date && r.due_date !== '—' ? r.due_date : '—'}</td>
+                                                <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{r.stage}</td>
                                                 <td>
                                                     {r.conf != null
                                                         ? <span className={`confidence-badge ${r.confCls || ''}`}>{r.conf}%</span>
