@@ -86,7 +86,6 @@ EXCEPTION_REGISTRY = {
     "NUM_DECIMAL_MISPLACE":     ("Numeric & Arithmetic", "Decimal Misplacement", "Cross-field plausibility check", "WARNING"),
     "NUM_LARGE_OUTLIER":        ("Numeric & Arithmetic", "Large Statistical Outlier", "Route to Intelligence layer", "WARNING"),
     "NUM_DUPLICATE_ENTRY":      ("Numeric & Arithmetic", "Duplicate Monetary Entry", "Cross-box validation", "WARNING"),
-    "FORM_INVALID_CODE":        ("Numeric & Arithmetic", "Invalid Form Code", "Reject invalid code value", "BLOCKING"),
     "ID_INVALID_SSN":           ("Identity & Entity", "Invalid SSN Format", "Reject document", "BLOCKING"),
     "ID_INVALID_TIN":           ("Identity & Entity", "Invalid TIN Format", "Reject document", "BLOCKING"),
     "ID_MASKED_SSN":            ("Identity & Entity", "Masked SSN", "Accept but flag masked", "WARNING"),
@@ -954,6 +953,7 @@ class ValidationEngine:
                 field=None, value=None)
             return self._build_result("LOW", [exc], data or {}, [exc])
         ctx = context or {}
+        self._ctx = ctx
         universal   = self._check_universal(data, ctx)
         method_name = "_validate_" + form_type.replace("-","_").replace(" ","_")\
                                                .replace("(","").replace(")","")
@@ -1131,9 +1131,82 @@ class ValidationEngine:
             return [self._make_exc("DB_TYPE_CONFLICT",
                 f"Validator internal error for W-2: {str(e)}", field=None)]
 
+    def _is_image_only_1040_context(self, ctx):
+        """
+        Keep 1040 image-only behavior aligned with 1040_exception_report.md.
+        """
+        c = ctx or {}
+        ocr = c.get("ocr", {}) if isinstance(c.get("ocr", {}), dict) else {}
+        doc = c.get("document", {}) if isinstance(c.get("document", {}), dict) else {}
+        pdf_type = str(c.get("pdf_type", "")).strip().lower()
+        return any([
+            pdf_type == "scanned",
+            bool(ocr.get("image_only")),
+            bool(ocr.get("is_scanned")),
+            bool(ocr.get("no_text_layer")),
+            doc.get("has_text_layer") is False,
+        ])
+
+    def _validate_1040_scan_profile(self, d, ctx):
+        """
+        1040 scan-first profile:
+        image/no-text uploads should surface OCR/manual-review exceptions early.
+        """
+        if not self._is_image_only_1040_context(ctx):
+            return []
+
+        excs = []
+        seen = set()
+
+        def add_once(code, description, field=None, value=None):
+            key = (code, field)
+            if key in seen:
+                return
+            seen.add(key)
+            excs.append(self._make_exc(code, description, field=field, value=value))
+
+        add_once(
+            "OCR_LOW_CONFIDENCE",
+            "1040 appears image-only (no text layer). Route through OCR pipeline before strict field/arithmetic validation.",
+            field=None,
+            value=0.0,
+        )
+
+        critical_fields = ["taxpayer_ssn", "total_income", "adjusted_gross_income"]
+        for f in critical_fields:
+            v = d.get(f)
+            if v is None or str(v).strip() == "":
+                add_once(
+                    "FLD_ZERO_VS_BLANK",
+                    f"1040 required field '{f}' is null or missing (image-only source; OCR/manual review required).",
+                    field=f,
+                    value=v,
+                )
+                add_once(
+                    "LLM_BLANK_AS_MISSING",
+                    f"Blank '{f}' may be OCR/LLM missingness from image-only 1040. Enforce schema null rules post-OCR.",
+                    field=f,
+                    value=v,
+                )
+            add_once(
+                "FLD_ILLEGIBLE",
+                f"Field '{f}' is not reliably machine-readable on image-only 1040. Re-run OCR or route to manual review.",
+                field=f,
+                value=v,
+            )
+
+        add_once(
+            "LLM_OVER_INFERENCE",
+            "Image-only 1040 detected; disable inference mode and require OCR-anchored extraction for empty/uncertain lines.",
+            field=None,
+            value=None,
+        )
+        return excs
+
     def _validate_1040(self, d):
         try:
             excs = []
+            excs += self._validate_1040_scan_profile(d, getattr(self, "_ctx", {}))
             excs += self._req(d, ["taxpayer_ssn","total_income","adjusted_gross_income"], "1040")
             excs += self._neg(d, ["total_income","adjusted_gross_income","taxable_income",
                                    "total_withholding","estimated_tax_payments"])
@@ -1328,7 +1401,7 @@ class ValidationEngine:
                 codes = [c.strip().upper() for c in re.split(r'[,/\s]+', str(code)) if c.strip()]
                 for c in codes:
                     if c not in VALID_1099R_CODES:
-                        excs.append(self._make_exc("FORM_INVALID_CODE",
+                        excs.append(self._make_exc("DB_TYPE_CONFLICT",
                             f"1099-R Box 7 distribution code '{c}' is not a valid IRS code. "
                             f"Valid codes: {sorted(VALID_1099R_CODES)}",
                             field="distribution_code", value=c))

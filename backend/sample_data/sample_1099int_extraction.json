@@ -1,0 +1,52 @@
+{
+  "form": "1099-INT",
+  "year": 2025,
+  "confidence": 0.98,
+  "payer": {
+    "payer_name": "First National Bank",
+    "payer_address": "500 Banking Plaza",
+    "payer_city": "New York",
+    "payer_state": "NY",
+    "payer_zip": "10010",
+    "payer_tin": "12-3456789",
+    "account_number": "****1234"
+  },
+  "recipient": {
+    "recipient_tin": "123-45-6789",
+    "recipient_name": "John Smith",
+    "recipient_address": "123 Oak Street",
+    "recipient_city": "New York",
+    "recipient_state": "NY",
+    "recipient_zip": "10001"
+  },
+  "interest_income": {
+    "box_1_interest_income": {
+      "value": 250.0,
+      "confidence": 0.98,
+      "extraction_notes": "Extracted from Box 1"
+    },
+    "box_2_us_savings_bonds": null,
+    "box_3_fed_income_tax_withheld": 0.0,
+    "box_4_us_treas_interest": null,
+    "box_5_tax_exempt_interest": null,
+    "box_6_taxable_us_treas": null
+  },
+  "extraction_metadata": {
+    "extracted_at": "2025-12-15T09:15:00Z",
+    "source": "ocr_engine",
+    "document_quality": 0.99,
+    "field_confidence_scores": {
+      "payer_name": 0.99,
+      "payer_tin": 0.99,
+      "recipient_tin": 0.99,
+      "box_1_interest_income": 0.98,
+      "recipient_address": 0.97
+    },
+    "missing_fields": [
+      "box_2_us_savings_bonds",
+      "box_4_us_treas_interest"
+    ],
+    "ambiguous_fields": [],
+    "notes": "Document quality is excellent. All critical fields extracted successfully."
+  }
+}

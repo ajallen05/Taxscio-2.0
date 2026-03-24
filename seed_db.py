@@ -2,7 +2,7 @@ import psycopg2
 import os
 
 # Database connection details
-db_url = "postgresql://postgres:postgres@localhost:5432/client_database"
+db_url = "postgresql://postgres:0406@localhost:5432/client_database"
 conn = psycopg2.connect(db_url)
 conn.autocommit = True
 cursor = conn.cursor()

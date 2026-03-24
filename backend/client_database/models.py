@@ -7,7 +7,7 @@ SQLAlchemy ORM models for the two core tables:
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import (
-    Column, String, Text, Boolean, Integer, DateTime, Date, Index
+    Column, String, Text, Boolean, Integer, DateTime, Date, Index, UniqueConstraint
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from .database import Base
@@ -42,6 +42,7 @@ class EnumMaster(Base):
 
     __table_args__ = (
         Index("ix_enum_master_enum_type_code", "enum_type", "code"),
+        UniqueConstraint("enum_type", "code", name="uq_enum_master_type_code"),
     )
 
 

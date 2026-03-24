@@ -2,7 +2,7 @@
  * App.jsx — Taxscio Complete Platform
  * All 12 pages, live APIs connected, static placeholders where no endpoint exists.
  */
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import JSZip from 'jszip';
 import ExceptionManager from './ExceptionManager';
 import AddClientForm from './AddClientForm';
@@ -23,6 +23,23 @@ const STATIC_CLIENTS = [
     { id: 9, name: 'Greenfield Ventures', type: 'S-Corp', status: 'processing', time: '30m ago' },
     { id: 10, name: 'Thompson, Angela', type: 'Individual', status: 'pending', time: '1h ago' },
 ];
+
+/** Dedupe by code:field — same logic as PageExceptions (validation may return overlapping lists). */
+function countDedupedExceptions(result) {
+    if (!result) return 0;
+    const seen = new Set();
+    let n = 0;
+    for (const arr of [result.exceptions, result.fixable_exceptions, result.review_exceptions]) {
+        for (const e of arr || []) {
+            const key = `${e?.code}:${e?.field}`;
+            if (!seen.has(key)) {
+                seen.add(key);
+                n += 1;
+            }
+        }
+    }
+    return n;
+}
 
 const STATIC_EXCEPTIONS = [
     { id: 'e1', client: 'Patel LLC', form: 'Form 1120-S · Schedule C', severity: 'high', type: '⚡ Data Mismatch', desc: 'Revenue ($1,240,000) differs from QuickBooks P&L ($1,287,500). Variance of $47,500 in Q4.', ai: 'Request Q4 bank reconciliation.', conf: '88%', confCls: 'high' },
@@ -554,12 +571,25 @@ function PageDashboard({ stats, events, files, results }) {
 // ═══════════════════════════════════════════════════════════════════════════
 // PAGE: CLIENTS
 // ═══════════════════════════════════════════════════════════════════════════
-function PageClients({ lastExtraction, apiUrl, onUpload, files, results }) {
+const CLIENT_DETAIL_TABS = [
+    { id: 'summary', label: 'Summary' },
+    { id: 'details', label: 'Details' },
+    { id: 'documents', label: 'Documents' },
+    { id: 'notes', label: 'Notes' },
+    { id: 'engagement', label: 'Engagement' },
+    { id: 'billing', label: 'Billing' },
+    { id: 'activity', label: 'Activity' },
+];
+
+function PageClients({ lastExtraction, apiUrl, onUpload, files, results, setResults }) {
     const [activeClient, setActiveClient] = useState(0);
-    const [activeTab, setActiveTab] = useState('overview');
+    const [activeTab, setActiveTab] = useState('summary');
     const [filter, setFilter] = useState('All');
     const [clients, setClients] = useState(STATIC_CLIENTS);
     const [clientsLoading, setClientsLoading] = useState(true);
+    const [ledgerRows, setLedgerRows] = useState([]);
+    const [ledgerError, setLedgerError] = useState(null);
+    const [selectedDocKey, setSelectedDocKey] = useState(null);
 
     // Fetch clients from API on mount
     useEffect(() => {
@@ -571,9 +601,9 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results }) {
                     // Map API clients to display format
                     const mappedClients = data.map((c, idx) => ({
                         id: c.id || idx,
-                        name: c.entity_type === 'INDIVIDUAL' 
+                        name: c.entity_type?.toUpperCase() === 'INDIVIDUAL' 
                             ? `${c.first_name || ''} ${c.last_name || ''}`.trim() || 'Unnamed'
-                            : c.business_name || c.trust_name || 'Unnamed',
+                            : c.business_name || c.trust_name || `${c.first_name || ''} ${c.last_name || ''}`.trim() || 'Unnamed',
                         type: c.entity_type || 'Individual',
                         status: 'processing',
                         time: 'just now',
@@ -594,8 +624,316 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results }) {
         fetchClients();
     }, [apiUrl]);
 
+    // Same ledger feed as Filing Pipeline — documents often appear here before/without local identity match
+    useEffect(() => {
+        const base = apiUrl || 'http://localhost:8000';
+        let cancelled = false;
+        async function fetchLedger() {
+            try {
+                const res = await fetch(`${base.replace(/\/$/, '')}/ledger/ledger`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                if (!cancelled) {
+                    setLedgerRows(Array.isArray(data) ? data : []);
+                    setLedgerError(null);
+                }
+            } catch (e) {
+                if (!cancelled) setLedgerError(e.message || 'unreachable');
+            }
+        }
+        fetchLedger();
+        const t = setInterval(fetchLedger, 10000);
+        return () => { cancelled = true; clearInterval(t); };
+    }, [apiUrl]);
+
     const client = clients[activeClient] || STATIC_CLIENTS[0];
-    const exceptions = lastExtraction?.exceptions || lastExtraction?.fixable_exceptions || [];
+
+    const clientFiles = useMemo(
+        () => files.filter((f) => fileMatchesClient(f, results[f.file.name], client)),
+        [files, results, client, activeClient],
+    );
+
+    const engagementExtraction = useMemo(() => {
+        if (extractionMatchesClient(lastExtraction, client)) return lastExtraction;
+        for (let i = files.length - 1; i >= 0; i -= 1) {
+            const f = files[i];
+            if (f.status !== 'completed') continue;
+            const r = results[f.file.name];
+            if (r && fileMatchesClient(f, r, client)) return r;
+        }
+        return null;
+    }, [lastExtraction, client, files, results, activeClient]);
+
+    const hasEngagementExceptions = countDedupedExceptions(engagementExtraction) > 0;
+
+    const engagementFileName = useMemo(() => {
+        if (!engagementExtraction) return null;
+        for (const [fileName, r] of Object.entries(results || {})) {
+            if (r === engagementExtraction) return fileName;
+        }
+        for (let i = files.length - 1; i >= 0; i -= 1) {
+            const f = files[i];
+            const r = results[f.file.name];
+            if (r && r.document_id && engagementExtraction.document_id && r.document_id === engagementExtraction.document_id) {
+                return f.file.name;
+            }
+        }
+        return null;
+    }, [engagementExtraction, results, files]);
+
+    const clientExceptionTotal = useMemo(
+        () => clientFiles.reduce((n, f) => n + countDedupedExceptions(results[f.file.name]), 0),
+        [clientFiles, results],
+    );
+
+    /** Upload rows + ledger rows for this client (deduped by document_id). */
+    const clientDocumentRows = useMemo(() => {
+        const rows = [];
+        const seenLedgerIds = new Set();
+
+        clientFiles.forEach((f) => {
+            const r = results[f.file.name];
+            if (r?.document_id) seenLedgerIds.add(r.document_id);
+            const exc = countDedupedExceptions(r);
+            rows.push({
+                key: `up:${f.file.name}`,
+                kind: 'upload',
+                label: f.file.name,
+                form: f.form_type || r?.form_type || '—',
+                file: f,
+                result: r,
+                stage: null,
+                ledgerStatus: null,
+                exceptions: exc,
+                validation: r?.validation_complete
+                    ? 'Validated'
+                    : (r?.form_type && (exc > 0 || r?.needs_review))
+                        ? 'Needs review'
+                        : r?.form_type
+                            ? 'Pending'
+                            : '—',
+            });
+        });
+
+        ledgerRows.forEach((rec) => {
+            if (!ledgerClientNameMatches(client, rec.client_name)) return;
+            const docId = rec.document_id;
+            if (docId && seenLedgerIds.has(docId)) return;
+            const pct = rec.confidence_score != null ? Math.round(rec.confidence_score * 100) : null;
+            rows.push({
+                key: `ld:${docId || `${rec.client_name}:${rec.document_type}:${rec.stage}`}`,
+                kind: 'ledger',
+                label: docId ? `${docId}` : (rec.description || 'Document'),
+                form: rec.document_type || '—',
+                file: null,
+                result: null,
+                stage: rec.stage || '—',
+                ledgerStatus: rec.status || '—',
+                conf: pct,
+                exceptions: null,
+                validation: rec.status === 'VALIDATED' ? 'Validated' : 'Pending validation',
+                auditTrail: Array.isArray(rec.audit_trail) ? rec.audit_trail : [],
+            });
+            if (docId) seenLedgerIds.add(docId);
+        });
+
+        return rows;
+    }, [clientFiles, results, ledgerRows, client, activeClient]);
+
+    const clientActivityRows = useMemo(() => {
+        const rows = [];
+
+        // From pipeline/ledger audit trail
+        clientDocumentRows
+            .filter((r) => r.kind === 'ledger')
+            .forEach((row) => {
+                (row.auditTrail || []).forEach((a, idx) => {
+                    const when = a?.time ? new Date(a.time) : null;
+                    const rawStatus = (a?.status || '').toString();
+                    const rawType = (a?.type || '').toString();
+                    let action = 'Pipeline Update';
+                    if (rawType === 'exception_escalated') action = 'Exception Escalated';
+                    else if (rawStatus === 'VALIDATED') action = 'Validation Completed';
+                    else if (rawStatus === 'EXTRACTED') action = 'Document Ingested';
+                    else if (rawStatus) action = rawStatus.replace(/_/g, ' ');
+                    rows.push({
+                        key: `lg:${row.key}:${idx}`,
+                        when,
+                        date: when ? when.toLocaleString() : '—',
+                        action,
+                        actor: rawType === 'exception_escalated' ? 'CPA' : 'System',
+                        details: `${row.form} · ${row.label}${a?.stage ? ` · ${a.stage}` : ''}`,
+                    });
+                });
+            });
+
+        // From this browser session uploads (helpful when ledger not yet linked)
+        clientFiles.forEach((f, idx) => {
+            if (!f?.uploadedAt) return;
+            rows.push({
+                key: `up:${f.file.name}:${idx}`,
+                when: null,
+                date: `Today ${f.uploadedAt}`,
+                action: 'PDF Uploaded',
+                actor: 'User',
+                details: `${f.file.name}${f.form_type ? ` · ${f.form_type}` : ''}`,
+            });
+        });
+
+        // Most recent first; unknown dates at end
+        rows.sort((a, b) => {
+            if (!a.when && !b.when) return 0;
+            if (!a.when) return 1;
+            if (!b.when) return -1;
+            return b.when - a.when;
+        });
+
+        return rows.slice(0, 60);
+    }, [clientDocumentRows, clientFiles]);
+
+    const clientSummary = useMemo(() => {
+        const stageOrder = {
+            'Document Collection': 1,
+            'AI Processing': 2,
+            'Exception Review': 3,
+            'CPA Review': 4,
+            'Client Approval': 5,
+            'Ready to E-File': 6,
+            'Filed & Confirmed': 7,
+            'Validation': 2,
+        };
+
+        let stage = 'Document Collection';
+        let stageRank = 0;
+        const confVals = [];
+        let validatedCount = 0;
+        let needsReviewCount = 0;
+        let processedCount = 0;
+        let uploadedCount = 0;
+
+        clientDocumentRows.forEach((row) => {
+            const rowStage = row.kind === 'ledger'
+                ? (row.stage || 'Document Collection')
+                : getStageFromFile(row.file, row.result);
+            const rank = stageOrder[rowStage] || 0;
+            if (rank > stageRank) {
+                stageRank = rank;
+                stage = rowStage;
+            }
+
+            if (row.validation === 'Validated') validatedCount += 1;
+            if ((row.exceptions || 0) > 0 || row.validation === 'Needs review') needsReviewCount += 1;
+            if (row.kind === 'upload') uploadedCount += 1;
+            // "Processed" means the document has entered AI/ledger pipeline and is no longer just collected.
+            if (row.kind === 'ledger' || rowStage !== 'Document Collection') processedCount += 1;
+
+            if (row.kind === 'upload') {
+                const c = row.result?.document_confidence;
+                if (typeof c === 'number') confVals.push(Math.round(c * 100));
+            } else if (typeof row.conf === 'number') {
+                confVals.push(row.conf);
+            }
+        });
+
+        const avgConfidence = confVals.length
+            ? Math.round(confVals.reduce((a, b) => a + b, 0) / confVals.length)
+            : null;
+        const totalLinkedDocs = clientDocumentRows.length;
+
+        const latest = clientActivityRows[0] || null;
+        const overview = totalLinkedDocs === 0
+            ? 'No client documents are linked yet.'
+            : `${totalLinkedDocs} document(s) linked. Stage: ${stage}. ${clientExceptionTotal} open exception(s).`;
+
+        return {
+            overview,
+            stage,
+            avgConfidence,
+            totalLinkedDocs,
+            uploadedCount,
+            processedCount,
+            validatedCount,
+            needsReviewCount,
+            latestActivity: latest ? `${latest.action} (${latest.date})` : 'No activity yet',
+        };
+    }, [clientDocumentRows, clientActivityRows, clientExceptionTotal]);
+
+    const clientAISummary = useMemo(() => {
+        const docs = clientDocumentRows;
+        const formSet = new Set(docs.map((d) => String(d.form || '').toUpperCase()).filter(Boolean));
+        const has1040 = Array.from(formSet).some((f) => f.includes('1040'));
+        const hasW2 = Array.from(formSet).some((f) => f.includes('W-2'));
+        const has1099 = Array.from(formSet).some((f) => f.includes('1099'));
+        const escalations = clientActivityRows.filter((a) => a.action === 'Exception Escalated').length;
+        const completedUploads = clientFiles.filter((f) => f.status === 'completed').length;
+
+        const executive = [
+            `${client.name} has ${docs.length} linked document(s) across ${formSet.size || 0} form type(s).`,
+            `Current pipeline stage is ${clientSummary.stage}; ${clientSummary.validatedCount} document(s) are validated.`,
+            clientSummary.avgConfidence !== null
+                ? `Average extraction confidence is ${clientSummary.avgConfidence}%.`
+                : 'Confidence is not available yet for this client.',
+        ];
+
+        const risks = [];
+        if (clientExceptionTotal > 0) risks.push(`${clientExceptionTotal} open exception(s) require CPA attention.`);
+        if (clientSummary.needsReviewCount > 0) risks.push(`${clientSummary.needsReviewCount} document(s) are marked as needing review.`);
+        if (clientSummary.avgConfidence !== null && clientSummary.avgConfidence < 80) risks.push('Low confidence trend (<80%) may increase manual correction workload.');
+        if (escalations > 0) risks.push(`${escalations} exception(s) were escalated and should be checked in activity history.`);
+        if (!risks.length) risks.push('No immediate compliance risk signals detected from current document set.');
+
+        const nextActions = [
+            clientExceptionTotal > 0
+                ? 'Resolve or override open exceptions in Engagement.'
+                : 'Run a final validation sweep before CPA sign-off.',
+            completedUploads < docs.length
+                ? 'Finish processing queued/in-progress uploads.'
+                : 'Proceed to CPA review and client approval workflow.',
+            'Use Documents tab JSON view to confirm critical identity and income fields.',
+        ];
+
+        const missingDocs = [];
+        if (has1040 && !hasW2) missingDocs.push('W-2 not detected alongside 1040.');
+        if (has1040 && !has1099) missingDocs.push('No 1099 forms detected for a 1040 engagement.');
+        if (!has1040 && docs.length > 0) missingDocs.push('Primary 1040 return not detected yet.');
+        if (!missingDocs.length) missingDocs.push('No obvious missing recurring forms detected from current set.');
+
+        return { executive, risks, nextActions, missingDocs };
+    }, [client.name, clientDocumentRows, clientActivityRows, clientFiles, clientSummary, clientExceptionTotal]);
+
+    const summaryStepIndex = useMemo(() => {
+        const m = {
+            'Document Collection': 0,
+            'AI Processing': 1,
+            'Validation': 1,
+            'Exception Review': 2,
+            'CPA Review': 2,
+            'Client Approval': 3,
+            'Ready to E-File': 4,
+            'E-File': 4,
+            'Filed & Confirmed': 5,
+            'Confirmed': 5,
+        };
+        return m[clientSummary.stage] ?? 0;
+    }, [clientSummary.stage]);
+
+    const selectedDocumentRow = useMemo(
+        () => clientDocumentRows.find((r) => r.key === selectedDocKey) || null,
+        [clientDocumentRows, selectedDocKey],
+    );
+
+    const selectedDocumentJson = useMemo(() => {
+        if (!selectedDocumentRow) return null;
+        if (selectedDocumentRow.kind === 'upload') {
+            const r = selectedDocumentRow.result || {};
+            return r.data || r.extracted_fields || {};
+        }
+        return null;
+    }, [selectedDocumentRow]);
+
+    useEffect(() => {
+        setSelectedDocKey(null);
+    }, [activeClient]);
 
     // When 'Add Client' is selected show the form panel instead of the detail view
     if (filter === 'Add Client') {
@@ -613,7 +951,7 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results }) {
                     </div>
                     {clients.map((c, i) => (
                         <div key={c.id} className={`client-card${activeClient === i ? ' active' : ''}`}
-                            onClick={() => { setActiveClient(i); setFilter('All'); setActiveTab('overview'); }}>
+                            onClick={() => { setActiveClient(i); setFilter('All'); setActiveTab('summary'); }}>
                             <div className="client-card-name">{c.name} <span className="entity-badge">{c.type}</span></div>
                             <div className="client-card-meta"><StatusPill status={c.status} /><span>{c.time}</span></div>
                         </div>
@@ -650,9 +988,9 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results }) {
                                     const data = await res.json();
                                     const mappedClients = data.map((c, idx) => ({
                                         id: c.id || idx,
-                                        name: c.entity_type === 'INDIVIDUAL' 
+                                        name: c.entity_type?.toUpperCase() === 'INDIVIDUAL' 
                                             ? `${c.first_name || ''} ${c.last_name || ''}`.trim() || 'Unnamed'
-                                            : c.business_name || c.trust_name || 'Unnamed',
+                                            : c.business_name || c.trust_name || `${c.first_name || ''} ${c.last_name || ''}`.trim() || 'Unnamed',
                                         type: c.entity_type || 'Individual',
                                         status: 'processing',
                                         time: 'just now',
@@ -687,7 +1025,7 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results }) {
                     </div>
                 </div>
                 {clients.map((c, i) => (
-                    <div key={c.id} className={`client-card${activeClient === i ? ' active' : ''}`} onClick={() => { setActiveClient(i); setActiveTab('overview'); }}>
+                    <div key={c.id} className={`client-card${activeClient === i ? ' active' : ''}`} onClick={() => { setActiveClient(i); setActiveTab('summary'); }}>
                         <div className="client-card-name">{c.name} <span className="entity-badge">{c.type}</span></div>
                         <div className="client-card-meta"><StatusPill status={c.status} /><span>{c.time}</span></div>
                     </div>
@@ -704,40 +1042,68 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results }) {
                     </div>
                 </div>
                 <div className="tab-bar">
-                    {['overview','details','documents', 'exceptions', 'history', 'notes'].map(t => (
-                        <div key={t} className={`tab-item${activeTab === t ? ' active' : ''}`} onClick={() => setActiveTab(t)}>
-                            {t.charAt(0).toUpperCase() + t.slice(1)}
+                    {CLIENT_DETAIL_TABS.map(({ id, label }) => (
+                        <div key={id} className={`tab-item${activeTab === id ? ' active' : ''}`} onClick={() => setActiveTab(id)}>
+                            {label}
                         </div>
                     ))}
                 </div>
-                {activeTab === 'overview' && (
+                {activeTab === 'summary' && (
                     <div>
                         <div className="stepper">
                             {['Document Collection', 'AI Processing', 'CPA Review', 'Client Approval', 'E-File', 'Confirmed'].map((s, i) => (
                                 <React.Fragment key={s}>
-                                    <div className={`step${i === 0 ? ' completed' : i === 1 ? ' current' : ''}`}>
-                                        <div className="step-dot">{i === 0 ? '✓' : i + 1}</div>
+                                    <div className={`step${i < summaryStepIndex ? ' completed' : i === summaryStepIndex ? ' current' : ''}`}>
+                                        <div className="step-dot">{i < summaryStepIndex ? '✓' : i + 1}</div>
                                         <div className="step-label">{s}</div>
                                     </div>
-                                    {i < 5 && <div className={`step-line${i === 0 ? ' done' : ''}`} />}
+                                    {i < 5 && <div className={`step-line${i < summaryStepIndex ? ' done' : ''}`} />}
                                 </React.Fragment>
                             ))}
                         </div>
-                        <div className="ai-summary">
-                            <div className="ai-summary-icon">❆</div>
-                            <div className="ai-summary-text">
-                                <div className="ai-badge">❆ AI Summary</div>
-                                <p>AI has processed <strong>{files.filter(f => f.status === 'completed').length} of {files.length}</strong> documents. <strong>{Object.values(results).reduce((n, r) => n + (r?.exceptions?.length || 0), 0)} exceptions</strong> require attention.</p>
-                            </div>
-                        </div>
                         <div className="key-figures">
-                            {[['Documents Uploaded', files.length, null, ''], ['Completed', files.filter(f => f.status === 'completed').length, 'green', ''], ['Exceptions', Object.values(results).reduce((n, r) => n + (r?.exceptions?.length || 0) + (r?.fixable_exceptions?.length || 0), 0), 'red', '']].map(([l, v, c, s]) => (
+                            {[['Documents Linked', clientSummary.totalLinkedDocs, null, ''], ['Processed', clientSummary.processedCount, 'green', ''], ['Exceptions', clientExceptionTotal, 'red', '']].map(([l, v, c, s]) => (
                                 <div key={l} className="key-fig">
                                     <div className="key-fig-label">{l}</div>
                                     <div className="key-fig-value" style={c ? { color: `var(--${c})` } : {}}>{v}</div>
                                     <div className="key-fig-sub">{s}</div>
                                 </div>
                             ))}
+                        </div>
+                        <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
+                            {[
+                                ['Current Stage', clientSummary.stage],
+                                ['Average Confidence', clientSummary.avgConfidence !== null ? `${clientSummary.avgConfidence}%` : '—'],
+                                ['Validated Documents', String(clientSummary.validatedCount)],
+                                ['Needs Review', String(clientSummary.needsReviewCount)],
+                                ['Latest Activity', clientSummary.latestActivity],
+                            ].map(([label, value]) => (
+                                <div key={label} style={{ background: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: 12 }}>
+                                    <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 6 }}>{label}</div>
+                                    <div style={{ fontSize: 13, color: 'var(--text-secondary)', fontWeight: 600 }}>{value}</div>
+                                </div>
+                            ))}
+                        </div>
+                        <div style={{ marginTop: 16, background: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: 14 }}>
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 10 }}>
+                                AI Summary (Structured + Narrative)
+                            </div>
+                            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Executive Summary</div>
+                            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                                {clientAISummary.executive.map((t) => <li key={t}>{t}</li>)}
+                            </ul>
+                            <div style={{ fontSize: 12, fontWeight: 700, margin: '10px 0 6px' }}>Top Risks</div>
+                            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                                {clientAISummary.risks.map((t) => <li key={t}>{t}</li>)}
+                            </ul>
+                            <div style={{ fontSize: 12, fontWeight: 700, margin: '10px 0 6px' }}>Next Actions</div>
+                            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                                {clientAISummary.nextActions.map((t) => <li key={t}>{t}</li>)}
+                            </ul>
+                            <div style={{ fontSize: 12, fontWeight: 700, margin: '10px 0 6px' }}>Missing Docs Signals</div>
+                            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                                {clientAISummary.missingDocs.map((t) => <li key={t}>{t}</li>)}
+                            </ul>
                         </div>
                     </div>
                 )}
@@ -888,62 +1254,199 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results }) {
                 )}
                 {activeTab === 'documents' && (
                     <div>
+                        <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 12px', lineHeight: 1.5 }}>
+                            Includes <strong>this browser&apos;s uploads</strong> matched by extracted name/TIN, plus <strong>filing pipeline / ledger</strong> rows where the ledger client name matches this record.
+                            {ledgerError && (
+                                <span style={{ color: 'var(--amber)', marginLeft: 8 }}>(Ledger API: {ledgerError})</span>
+                            )}
+                        </p>
                         <table className="data-table">
-                            <thead><tr><th>Document</th><th>Type</th><th>Status</th><th>Confidence</th></tr></thead>
+                            <thead><tr><th>Document</th><th>Type</th><th>Status</th><th>Confidence</th><th>Exceptions</th><th>Validation</th><th>Stage</th></tr></thead>
                             <tbody>
-                                {files.length > 0 ? files.map((f, i) => {
-                                    const r = results[f.file.name];
-                                    const pct = r?.document_confidence !== undefined ? Math.round(r.document_confidence * 100) : null;
+                                {clientDocumentRows.length > 0 ? clientDocumentRows.map((row) => {
+                                    const hasExtractedJson = row.kind === 'upload' && !!(row.result?.data || row.result?.extracted_fields);
                                     return (
-                                        <tr key={i}>
-                                            <td style={{ fontWeight: 500 }}>{f.file.name}</td>
-                                            <td className="mono">{f.form_type || r?.form_type || '—'}</td>
-                                            <td><StatusPill status={getStatusFromFile(f, r)} /></td>
-                                            <td><span className={`confidence-badge ${confClass(r?.document_confidence)}`}>{pct !== null ? `${pct}%` : '—'}</span></td>
-                                        </tr>
+                                    <tr
+                                        key={row.key}
+                                        onClick={() => hasExtractedJson && setSelectedDocKey(row.key)}
+                                        style={{
+                                            cursor: hasExtractedJson ? 'pointer' : 'default',
+                                            background: selectedDocKey === row.key ? 'var(--surface-1)' : undefined,
+                                        }}
+                                        title={hasExtractedJson ? 'Click to view extracted JSON' : ''}
+                                    >
+                                        <td style={{ fontWeight: 500, maxWidth: 220 }} title={row.label}>{row.label}</td>
+                                        <td className="mono">{row.form}</td>
+                                        <td>
+                                            {row.kind === 'upload'
+                                                ? <StatusPill status={getStatusFromFile(row.file, row.result)} />
+                                                : (
+                                                    <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{row.ledgerStatus}</span>
+                                                )}
+                                        </td>
+                                        <td>
+                                            {row.kind === 'upload' ? (
+                                                <span className={`confidence-badge ${confClass(row.result?.document_confidence)}`}>
+                                                    {row.result?.document_confidence != null ? `${Math.round(row.result.document_confidence * 100)}%` : '—'}
+                                                </span>
+                                            ) : (
+                                                <span className={`confidence-badge ${row.conf != null ? confClass(row.conf / 100) : ''}`}>{row.conf != null ? `${row.conf}%` : '—'}</span>
+                                            )}
+                                        </td>
+                                        <td style={{ fontWeight: 600, color: row.exceptions > 0 ? 'var(--red)' : 'var(--text-muted)', fontSize: 13 }}>
+                                            {row.exceptions !== null && row.exceptions !== undefined ? row.exceptions : '—'}
+                                        </td>
+                                        <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{row.validation}</td>
+                                        <td style={{ fontSize: 11, color: 'var(--text-muted)' }}>{row.kind === 'ledger' ? (row.stage || '—') : '—'}</td>
+                                    </tr>
                                     );
                                 }) : (
-                                    <tr><td colSpan={4} style={{ textAlign: 'center', padding: 32, color: 'var(--text-muted)', fontSize: 12 }}>No documents uploaded yet</td></tr>
+                                    <tr><td colSpan={7} style={{ textAlign: 'center', padding: 32, color: 'var(--text-muted)', fontSize: 12 }}>No documents for this client yet. Confirm the client name matches the ledger, or upload in Ingestion Hub.</td></tr>
                                 )}
                             </tbody>
                         </table>
-                    </div>
-                )}
-                {activeTab === 'exceptions' && (
-                    <div>
-                        {exceptions.length > 0 ? (
-                            <ExceptionManager
-                                apiUrl={apiUrl} formType={lastExtraction?.form_type || 'Unknown'}
-                                data={lastExtraction?.data || {}}
-                                fixableExceptions={lastExtraction?.fixable_exceptions || []}
-                                reviewExceptions={lastExtraction?.review_exceptions || []}
-                                allExceptions={exceptions} summary={lastExtraction?.summary || {}}
-                                humanVerifiedFields={lastExtraction?.human_verified_fields || []}
-                                showSidePdf={false} setShowSidePdf={() => { }}
-                                onResolved={() => { }} ignoredIds={new Set()} setIgnoredIds={() => { }}
-                            />
-                        ) : (
-                            <div style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
-                                <div style={{ fontSize: 24, marginBottom: 8, opacity: .4 }}>✅</div>
-                                No exceptions found for uploaded documents.
+                        {selectedDocumentJson && (
+                            <div style={{ marginTop: 16 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                                    <div style={{ fontSize: 13, fontWeight: 700 }}>
+                                        Extracted Document JSON — {selectedDocumentRow?.label}
+                                    </div>
+                                    <button
+                                        type="button"
+                                        className="btn btn-secondary"
+                                        style={{ fontSize: 11 }}
+                                        onClick={() => setSelectedDocKey(null)}
+                                    >
+                                        Close
+                                    </button>
+                                </div>
+                                <pre
+                                    style={{
+                                        margin: 0,
+                                        padding: 14,
+                                        maxHeight: 360,
+                                        overflow: 'auto',
+                                        fontSize: 12,
+                                        lineHeight: 1.5,
+                                        background: 'var(--surface-1)',
+                                        border: '1px solid var(--border)',
+                                        borderRadius: 'var(--radius)',
+                                        fontFamily: 'var(--font-mono)',
+                                    }}
+                                >
+                                    {JSON.stringify(selectedDocumentJson, null, 2)}
+                                </pre>
                             </div>
                         )}
                     </div>
-                )}
-                {activeTab === 'history' && (
-                    <table className="data-table">
-                        <thead><tr><th>Date</th><th>Action</th><th>Actor</th><th>Details</th></tr></thead>
-                        <tbody>
-                            <tr><td className="mono">Mar 8, 10:25</td><td>Exception Flagged</td><td><span className="ai-badge" style={{ margin: 0, fontSize: 9 }}>❆ AI</span></td><td style={{ color: 'var(--text-muted)' }}>W-2 income discrepancy — $7,250 variance</td></tr>
-                            <tr><td className="mono">Mar 8, 10:24</td><td>Document Ingested</td><td><span className="ai-badge" style={{ margin: 0, fontSize: 9 }}>❆ AI</span></td><td style={{ color: 'var(--text-muted)' }}>W-2_Employer_Acme.pdf — 98% confidence</td></tr>
-                            <tr><td className="mono">Mar 7, 14:45</td><td>Portal Link Sent</td><td>Michael Chen</td><td style={{ color: 'var(--text-muted)' }}>Requested 1099-INT from Chase Bank</td></tr>
-                        </tbody>
-                    </table>
                 )}
                 {activeTab === 'notes' && (
                     <div>
                         <textarea style={{ width: '100%', minHeight: 200, resize: 'vertical', fontSize: 13, lineHeight: 1.6, padding: 16, background: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', outline: 'none' }} defaultValue="Add notes about this client…" />
                         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}><button className="btn btn-primary">Save Notes</button></div>
+                    </div>
+                )}
+                {activeTab === 'engagement' && (
+                    <div>
+                        {!engagementExtraction ? (
+                            <div style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+                                <div style={{ fontSize: 24, marginBottom: 8, opacity: .4 }}>📄</div>
+                                <div style={{ fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 8 }}>No extraction for this client yet</div>
+                                <div style={{ maxWidth: 420, margin: '0 auto', lineHeight: 1.5 }}>
+                                    Engagement shows validation from <strong>Ingestion Hub</strong> when the extracted name or TIN matches this client.
+                                    Upload their forms there, or check that the client name in your database matches the return.
+                                </div>
+                            </div>
+                        ) : hasEngagementExceptions ? (
+                            <ExceptionManager
+                                apiUrl={apiUrl} formType={engagementExtraction?.form_type || 'Unknown'}
+                                data={engagementExtraction?.data || {}}
+                                fixableExceptions={engagementExtraction?.fixable_exceptions || []}
+                                reviewExceptions={engagementExtraction?.review_exceptions || []}
+                                allExceptions={engagementExtraction?.exceptions || []} summary={engagementExtraction?.summary || {}}
+                                humanVerifiedFields={engagementExtraction?.human_verified_fields || []}
+                                showSidePdf={false} setShowSidePdf={() => { }}
+                                onResolved={(updated) => {
+                                    if (!setResults || !engagementFileName || !updated || typeof updated !== 'object') return;
+                                    setResults(prev => ({
+                                        ...prev,
+                                        [engagementFileName]: {
+                                            ...(prev[engagementFileName] || {}),
+                                            ...updated,
+                                        },
+                                    }));
+                                }}
+                                ignoredIds={engagementExtraction?.ignoredIds || new Set()}
+                                setIgnoredIds={(fn) => {
+                                    if (!setResults || !engagementFileName) return;
+                                    setResults(prev => {
+                                        const cur = prev[engagementFileName] || {};
+                                        const next = typeof fn === 'function'
+                                            ? fn(cur.ignoredIds || new Set())
+                                            : fn;
+                                        return {
+                                            ...prev,
+                                            [engagementFileName]: { ...cur, ignoredIds: next },
+                                        };
+                                    });
+                                }}
+                            />
+                        ) : (
+                            <div style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+                                <div style={{ fontSize: 24, marginBottom: 8, opacity: .4 }}>✅</div>
+                                No exceptions found for this client&apos;s documents.
+                            </div>
+                        )}
+                    </div>
+                )}
+                {activeTab === 'billing' && (
+                    <div style={{ padding: '20px' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 16, marginBottom: 20 }}>
+                            {[
+                                ['Engagement fee', '—', 'Per return / scope'],
+                                ['Hours (YTD)', '—', 'Billable vs actual'],
+                                ['Outstanding', '$0.00', 'Invoices not paid'],
+                            ].map(([label, value, sub]) => (
+                                <div key={label} style={{ background: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: 16 }}>
+                                    <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>{label}</div>
+                                    <div style={{ fontSize: 20, fontWeight: 700 }}>{value}</div>
+                                    <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{sub}</div>
+                                </div>
+                            ))}
+                        </div>
+                        <table className="data-table">
+                            <thead><tr><th>Invoice</th><th>Period</th><th>Amount</th><th>Status</th></tr></thead>
+                            <tbody>
+                                <tr><td colSpan={4} style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)', fontSize: 13 }}>No invoices linked to this client yet.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+                {activeTab === 'activity' && (
+                    <div>
+                        <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 12px' }}>
+                            Activity includes ledger/pipeline audit events and uploads from this browser session.
+                            Password/account events are not available in the current backend yet.
+                        </p>
+                        <table className="data-table">
+                            <thead><tr><th>Date</th><th>Action</th><th>Actor</th><th>Details</th></tr></thead>
+                            <tbody>
+                                {clientActivityRows.length > 0 ? clientActivityRows.map((row) => (
+                                    <tr key={row.key}>
+                                        <td className="mono">{row.date}</td>
+                                        <td>{row.action}</td>
+                                        <td>{row.actor}</td>
+                                        <td style={{ color: 'var(--text-muted)' }}>{row.details}</td>
+                                    </tr>
+                                )) : (
+                                    <tr>
+                                        <td colSpan={4} style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)', fontSize: 12 }}>
+                                            No activity history found for this client yet.
+                                        </td>
+                                    </tr>
+                                )}
+                            </tbody>
+                        </table>
                     </div>
                 )}
             </div>
@@ -955,15 +1458,15 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results }) {
 // CLIENT IDENTITY HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
 
-function extractClientIdentity(data) {
-    if (!data || typeof data !== 'object') return null;
+function extractFromFlatObject(data) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
     const clientSuffixes = ['name_on_return', 'taxpayer_name', 'employee_name', 'partner_name',
         'beneficiary_name', 'shareholder_name', 'client_name', 'payee_name', 'filer_name',
         'recipient_name', 'transferor_name'];
     const entitySuffixes = ['business_name', 'company_name', 'entity_name', 'employer_name',
         'payer_name', 'trustee_or_payer_name'];
     const tinFields = ['employee_ssn', 'recipient_tin', 'payer_tin', 'tax_id'];
-    let name = null, tin = null;
+    let name = null; let tin = null;
 
     for (const [k, v] of Object.entries(data)) {
         if (!v || typeof v !== 'string') continue;
@@ -983,6 +1486,85 @@ function extractClientIdentity(data) {
         }
     }
     return (name || tin) ? { name, tin } : null;
+}
+
+/** Extract taxpayer / business identity; walks nested extraction dicts (common for 1040 / schedules). */
+function extractClientIdentity(data, depth = 0) {
+    if (!data || typeof data !== 'object' || depth > 6) return null;
+    const flat = extractFromFlatObject(data);
+    if (flat) return flat;
+    if (Array.isArray(data)) {
+        for (const item of data) {
+            const id = extractClientIdentity(item, depth + 1);
+            if (id) return id;
+        }
+        return null;
+    }
+    for (const v of Object.values(data)) {
+        if (v && typeof v === 'object') {
+            const id = extractClientIdentity(v, depth + 1);
+            if (id) return id;
+        }
+    }
+    return null;
+}
+
+function _normClientStr(s) {
+    return (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/** Match extracted identity to the client row (DB + static list). */
+function clientIdentityMatchesClient(id, client) {
+    if (!client || !id || (!id.name && !id.tin)) return false;
+    const fd = client.fullData;
+    if (id.tin && fd?.tax_id) {
+        const a = id.tin.replace(/\D/g, '');
+        const b = (fd.tax_id || '').replace(/\D/g, '');
+        if (a.length >= 4 && b.length >= 4 && a === b) return true;
+    }
+    if (id.tin && fd?.ssn) {
+        const a = id.tin.replace(/\D/g, '');
+        const b = (fd.ssn || '').replace(/\D/g, '');
+        if (a.length >= 4 && b.length >= 4 && a === b) return true;
+    }
+    if (id.name) {
+        const n = _normClientStr(id.name);
+        if (_normClientStr(client.name) === n) return true;
+        if (fd?.business_name && _normClientStr(fd.business_name) === n) return true;
+        if (fd?.trust_name && _normClientStr(fd.trust_name) === n) return true;
+        if (String(fd?.entity_type || '').toUpperCase() === 'INDIVIDUAL') {
+            const full = _normClientStr(`${fd.first_name || ''} ${fd.last_name || ''}`);
+            if (full && full === n) return true;
+        }
+    }
+    return false;
+}
+
+function extractionMatchesClient(extraction, client) {
+    if (!extraction) return false;
+    const data = extraction.data || extraction.extracted_fields;
+    return clientIdentityMatchesClient(extractClientIdentity(data), client);
+}
+
+function fileMatchesClient(file, result, client) {
+    const data = result?.data || result?.extracted_fields;
+    return clientIdentityMatchesClient(extractClientIdentity(data), client);
+}
+
+/** Match pipeline/ledger client_name string to the selected client row. */
+function ledgerClientNameMatches(client, ledgerClientName) {
+    if (!client || !ledgerClientName) return false;
+    const ln = _normClientStr(String(ledgerClientName));
+    if (!ln) return false;
+    if (ln === _normClientStr(client.name)) return true;
+    const fd = client.fullData;
+    if (fd?.business_name && _normClientStr(fd.business_name) === ln) return true;
+    if (fd?.trust_name && _normClientStr(fd.trust_name) === ln) return true;
+    if (String(fd?.entity_type || '').toUpperCase() === 'INDIVIDUAL') {
+        const full = _normClientStr(`${fd.first_name || ''} ${fd.last_name || ''}`);
+        if (full && full === ln) return true;
+    }
+    return false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1099,7 +1681,7 @@ function PagePipeline({ files, results, apiUrl }) {
         
         async function fetchClients() {
             try {
-                const res = await fetch(`${base}/clients?limit=1000`);
+                const res = await fetch(`${base}/clients?limit=500&offset=0`);
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const clients = await res.json();
                 const map = {};
@@ -1116,9 +1698,9 @@ function PagePipeline({ files, results, apiUrl }) {
                     }
                 });
                 setClientsMap(map);
+                console.log('Clients fetched successfully:', map);
             } catch (err) {
-                // Silently fail - clients map is optional
-                console.debug('Failed to fetch clients:', err);
+                console.error('Failed to fetch clients:', err);
             }
         }
         
@@ -1403,9 +1985,6 @@ function PagePipeline({ files, results, apiUrl }) {
                                                 {isExpanded ? '▼' : '▶'}
                                             </td>
                                             <td style={{ fontWeight: 600 }}>
-                                                {hasDB && (
-                                                    <span title="Stored in database" style={{ fontSize: 10, background: 'rgba(59,130,246,.12)', color: '#3b82f6', padding: '1px 5px', borderRadius: 6, marginRight: 6 }}>🗄 DB</span>
-                                                )}
                                                 {clientName}
                                             </td>
                                             <td style={{ textAlign: 'center' }}>
@@ -1413,7 +1992,7 @@ function PagePipeline({ files, results, apiUrl }) {
                                                     {rows.length}
                                                 </span>
                                             </td>
-                                            <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{clientStage}</td>
+                                            <td style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 500 }}>{clientStage}</td>
                                             <td>
                                                 <span style={{ color: 'var(--text-muted)' }}>—</span>
                                             </td>
@@ -1427,10 +2006,9 @@ function PagePipeline({ files, results, apiUrl }) {
                                             <tr key={i} style={{ background: 'var(--surface-1, rgba(0,0,0,.02))' }}>
                                                 <td></td>
                                                 <td style={{ paddingLeft: 32, fontSize: 12, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                                                    <span style={{ display: 'inline-block', width: 3, height: 3, borderRadius: '50%', background: 'var(--text-muted)' }}></span>
                                                     <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>{r.form}</span>
-                                                    <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 'auto' }}>
-                                                        {(r.uploadCount || 1)} / {(r.version || 1)}
+                                                    <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 'auto' }} title="Document version">
+                                                        {r.version ?? 1}
                                                     </span>
                                                 </td>
                                                 <td></td>
@@ -1512,11 +2090,15 @@ function ExcCard({ exc, apiUrl, onAccept, onOverride }) {
 // ═══════════════════════════════════════════════════════════════════════════
 // LIVE EXCEPTION CARD — matches Image 1 card grid layout
 // ═══════════════════════════════════════════════════════════════════════════
-function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {} }) {
+function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}, documentId: documentIdProp }) {
     const [overrideMode, setOverrideMode] = useState(false);
     const [overrideVal, setOverrideVal] = useState('');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
+    const [escalated, setEscalated] = useState(false);
+    const [escalationMeta, setEscalationMeta] = useState(null);
+    const [hidden, setHidden] = useState(false);
+    const baseApiUrl = (apiUrl || 'http://localhost:8000').replace(/\/$/, '');
 
     // Normalise severity to high / medium / low
     const rawSev = (exc.severity || '').toUpperCase();
@@ -1559,17 +2141,21 @@ function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}
                 pdf_type: 'digital',
                 human_verified_fields: exc.field ? [exc.field] : [],
             };
-            const r = await fetch(`${apiUrl}/apply-fixes`, {
+            const r = await fetch(`${baseApiUrl}/apply-fixes`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body),
             });
             const data = await r.json().catch(() => ({}));
-            // Always call onResolved — parent removes this exception from results regardless of API success
-            if (onResolved) onResolved(excKey, r.ok ? data : null);
+            if (!r.ok) {
+                setError(data?.error || data?.message || `Save failed (${r.status})`);
+                return;
+            }
+            // Remove card only after successful save.
+            setHidden(true);
+            if (onResolved) onResolved(excKey, data);
         } catch (e) {
-            // Network error — still remove from UI
-            if (onResolved) onResolved(excKey, null);
+            setError(e?.message || 'Network error');
         } finally {
             setLoading(false);
         }
@@ -1585,11 +2171,54 @@ function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}
         callAPI(overrideVal);
     };
 
+    const handleEscalate = async () => {
+        setLoading(true);
+        setError(null);
+        try {
+            const r = await fetch(`${baseApiUrl}/ledger/escalate-exception`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    document_id: documentIdProp || null,
+                    client_name: clientLabel,
+                    document_type: formType,
+                    exception_code: exc.code,
+                    exception_field: exc.field,
+                    severity: exc.severity || rawSev || sevDisplay,
+                    description: exc.description || exc.message || null,
+                    filename,
+                }),
+            });
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok) {
+                setError(data.error || data.message || `Escalation failed (${r.status})`);
+                return;
+            }
+            setEscalationMeta({
+                id: data.escalation_id,
+                ledgerLinked: !!data.ledger_linked,
+            });
+            // Treat escalation as "ignore and remove from queue"
+            setHidden(true);
+            if (onResolved) {
+                onResolved(excKey, null);
+                return;
+            }
+            setEscalated(true);
+        } catch (e) {
+            setError(e?.message || 'Network error');
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const aiText = exc.ai_suggestion || exc.fix_description || exc.edit_hint || exc.handling || '—';
     const confPct = exc.confidence !== undefined ? Math.round(exc.confidence * 100)
         : exc.document_confidence !== undefined ? Math.round(exc.document_confidence * 100)
             : null;
     const confCls = confPct === null ? '' : confPct >= 90 ? 'high' : confPct >= 70 ? 'med' : 'low';
+
+    if (hidden) return null;
 
     return (
         <div className="exception-card">
@@ -1622,17 +2251,42 @@ function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}
                 <div style={{ fontSize: 11, color: 'var(--red)', marginBottom: 8 }}>{error}</div>
             )}
 
+            {escalated && escalationMeta && (
+                <div
+                    style={{
+                        fontSize: 12,
+                        color: 'var(--text-secondary)',
+                        marginBottom: 10,
+                        padding: '10px 12px',
+                        background: 'rgba(99, 102, 241, 0.08)',
+                        border: '1px solid var(--border)',
+                        borderRadius: 'var(--radius)',
+                    }}
+                >
+                    <strong style={{ color: 'var(--text-primary)' }}>Escalated.</strong>{' '}
+                    Recorded on the server (escalation #{escalationMeta.id}).
+                    {escalationMeta.ledgerLinked
+                        ? ' Linked to your filing pipeline ledger.'
+                        : ' No matching ledger row for this client/form — escalation is still stored.'}
+                </div>
+            )}
+
             {!overrideMode ? (
                 <div className="exception-actions">
-                    <button className="btn btn-success" onClick={handleAccept} disabled={loading}>
+                    <button type="button" className="btn btn-success" onClick={handleAccept} disabled={loading || escalated}>
                         {loading ? 'Applying…' : 'Accept AI Suggestion'}
                     </button>
-                    <button className="btn btn-secondary" onClick={() => setOverrideMode(true)} disabled={loading}>
+                    <button type="button" className="btn btn-secondary" onClick={() => setOverrideMode(true)} disabled={loading || escalated}>
                         Override
                     </button>
-                    {sevDisplay === 'HIGH' && (
-                        <button className="btn btn-danger" disabled={loading}>Escalate</button>
-                    )}
+                    <button
+                        type="button"
+                        className="btn btn-danger"
+                        disabled={loading || escalated}
+                        onClick={handleEscalate}
+                    >
+                        {loading ? 'Sending…' : escalated ? 'Escalated' : 'Escalate'}
+                    </button>
                 </div>
             ) : (
                 <div className="exception-actions" style={{ flexDirection: 'column', gap: 8 }}>
@@ -1773,6 +2427,7 @@ function PageExceptions({ files, results, apiUrl, setResults }) {
                                 formType={card.formType}
                                 filename={card.filename}
                                 apiUrl={apiUrl}
+                                documentId={card.result?.document_id}
                                 docData={card.result.extracted_fields || card.result.data || {}}
                                 onResolved={(excKey, apiData) => {
                                     if (!setResults) return;
@@ -2446,6 +3101,7 @@ function PageIdentity() {
 // PAGE: INTEGRATIONS
 // ═══════════════════════════════════════════════════════════════════════════
 function PageIntegrations() {
+    const [tab, setTab] = useState('connected');
     const connected = [
         ['🏛', 'IRS E-File API', 'Direct electronic filing with IRS. Supports Forms 1040, 1065, 1120, 1120-S, 1041.', 'Last sync: 2 hours ago'],
         ['📗', 'QuickBooks Online', 'Sync client P&L, balance sheets, and transaction data. Auto-import for reconciliation.', '142 clients synced'],
@@ -2462,22 +3118,29 @@ function PageIntegrations() {
     ];
     return (
         <div>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
                 <div style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 700 }}>Integrations</div>
                 <button className="btn btn-secondary">Browse Marketplace</button>
             </div>
-            <div className="settings-section"><h3>Connected Services</h3></div>
-            <div className="integ-grid" style={{ marginBottom: 32 }}>
-                {connected.map(([ic, t, d, s]) => (
-                    <div key={t} className="integ-card"><div className="integ-card-icon">{ic}</div><div className="integ-card-info"><div className="integ-card-title">{t}</div><div className="integ-card-desc">{d}</div><div className="integ-card-status"><span className="status-pill approved">Connected</span><span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{s}</span></div></div></div>
+            <div className="tab-bar" style={{ marginBottom: 24 }}>
+                {[['connected', 'Connected Services'], ['available', 'Available Integrations']].map(([id, label]) => (
+                    <div key={id} className={`tab-item${tab === id ? ' active' : ''}`} onClick={() => setTab(id)}>{label}</div>
                 ))}
             </div>
-            <div className="settings-section"><h3>Available Integrations</h3></div>
-            <div className="integ-grid">
-                {available.map(([ic, t, d]) => (
-                    <div key={t} className="integ-card"><div className="integ-card-icon">{ic}</div><div className="integ-card-info"><div className="integ-card-title">{t}</div><div className="integ-card-desc">{d}</div><div className="integ-card-status"><button className="btn btn-secondary" style={{ fontSize: 11 }}>Connect</button></div></div></div>
-                ))}
-            </div>
+            {tab === 'connected' && (
+                <div className="integ-grid">
+                    {connected.map(([ic, t, d, s]) => (
+                        <div key={t} className="integ-card"><div className="integ-card-icon">{ic}</div><div className="integ-card-info"><div className="integ-card-title">{t}</div><div className="integ-card-desc">{d}</div><div className="integ-card-status"><span className="status-pill approved">Connected</span><span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{s}</span></div></div></div>
+                    ))}
+                </div>
+            )}
+            {tab === 'available' && (
+                <div className="integ-grid">
+                    {available.map(([ic, t, d]) => (
+                        <div key={t} className="integ-card"><div className="integ-card-icon">{ic}</div><div className="integ-card-info"><div className="integ-card-title">{t}</div><div className="integ-card-desc">{d}</div><div className="integ-card-status"><button className="btn btn-secondary" style={{ fontSize: 11 }}>Connect</button></div></div></div>
+                    ))}
+                </div>
+            )}
         </div>
     );
 }
@@ -2812,7 +3475,7 @@ function ProfileDropdown({ open, onClose, onNavigate }) {
 // ═══════════════════════════════════════════════════════════════════════════
 export default function App() {
     const isDev = import.meta.env.DEV;
-    const apiUrl = '';
+    const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '');
 
     // ── Layout state ──────────────────────────────────────────────────────
     const [currentPage, setCurrentPage] = useState('dashboard');
@@ -2851,8 +3514,8 @@ export default function App() {
         : Object.keys(results).length > 0 ? results[Object.keys(results)[Object.keys(results).length - 1]]
             : null;
 
-    // Exception count for nav badge
-    const exceptionCount = (lastExtraction?.exceptions || []).length;
+    // Exception count for nav badge (deduped — matches Exceptions queue)
+    const exceptionCount = useMemo(() => countDedupedExceptions(lastExtraction), [lastExtraction]);
 
     // ── Connection check with retry ───────────────────────────────────────
     useEffect(() => {
@@ -3222,7 +3885,7 @@ export default function App() {
                     )}
 
                     {currentPage === 'dashboard' && <PageDashboard stats={stats} events={events} files={files} results={results} />}
-                    {currentPage === 'clients' && <PageClients lastExtraction={lastExtraction} apiUrl={apiUrl} onUpload={() => navigate('ingestion')} files={files} results={results} />}
+                    {currentPage === 'clients' && <PageClients lastExtraction={lastExtraction} apiUrl={apiUrl} onUpload={() => navigate('ingestion')} files={files} results={results} setResults={setResults} />}
                     {currentPage === 'pipeline' && <PagePipeline files={files} results={results} apiUrl={apiUrl} />}
                     {currentPage === 'exceptions' && <PageExceptions files={files} results={results} apiUrl={apiUrl} setResults={setResults} />}
                     {currentPage === 'documents' && <PageDocuments files={files} results={results} events={events} onDrop={handleDocDrop} fileInputRef={docFileRef} />}
