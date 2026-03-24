@@ -1,0 +1,72 @@
+{
+  "form": "W-2",
+  "year": 2025,
+  "confidence": 0.96,
+  "employee_information": {
+    "employee_ssn": "123-45-6789",
+    "employee_first_name": "John",
+    "employee_last_name": "Smith",
+    "suffix": null,
+    "employee_address": "123 Oak Street",
+    "employee_city": "New York",
+    "employee_state": "NY",
+    "employee_zip": "10001"
+  },
+  "employer_information": {
+    "employer_tin": "12-3456789",
+    "employer_name": "ABC Corporation",
+    "employer_address": "100 Business Blvd",
+    "employer_city": "New York",
+    "employer_state": "NY",
+    "employer_zip": "10005",
+    "control_number": "001"
+  },
+  "wage_information": {
+    "box_1_wages_tips_other_compensation": 75000.0,
+    "box_2_federal_income_tax_withheld": 12500.0,
+    "box_3_social_security_wages": 75000.0,
+    "box_4_social_security_tax_withheld": 4650.0,
+    "box_5_medicare_wages_and_tips": 75000.0,
+    "box_6_medicare_tax_withheld": 1087.5,
+    "box_7_social_security_tips": 0.0,
+    "box_8_allocated_tips": null,
+    "box_9": null,
+    "box_10_dependent_care_benefits": null,
+    "box_11_nonqualified_plans": null
+  },
+  "box_12": {
+    "12a": null,
+    "12b": null,
+    "12c": null,
+    "12d": null
+  },
+  "box_13_checkboxes": {
+    "statutory_employee": false,
+    "retirement_plan": true,
+    "third_party_sick_pay": false
+  },
+  "box_14": {
+    "other": null,
+    "occupation_code": null
+  },
+  "state_income_tax_info": {
+    "state_income_tax_withheld": 2500.0,
+    "state_wages": 75000.0,
+    "state_code": "NY"
+  },
+  "extraction_metadata": {
+    "extracted_at": "2025-12-15T10:30:00Z",
+    "source": "ocr_engine",
+    "field_confidence_scores": {
+      "ssn": 0.99,
+      "ein": 0.98,
+      "box_1": 0.95,
+      "box_2": 0.96,
+      "box_5": 0.97,
+      "employee_name": 0.93
+    },
+    "missing_fields": [],
+    "ambiguous_fields": [],
+    "page_quality": 0.96
+  }
+}

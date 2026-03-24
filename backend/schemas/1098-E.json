@@ -1,0 +1,14 @@
+{
+  "lender_name": null,
+  "lender_address": null,
+  "lender_city_state_zip": null,
+  "lender_tin": null,
+  "borrower_name": null,
+  "borrower_address": null,
+  "borrower_city_state_zip": null,
+  "borrower_tin": null,
+  "account_number": null,
+  "tax_year": 2024,
+  "box_1_student_loan_interest_received": null,
+  "box_2_loans_not_certified": false
+}

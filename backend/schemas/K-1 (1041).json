@@ -1,0 +1,79 @@
+{
+  "form": {
+    "form_number": "Schedule K-1",
+    "parent_form": "Form 1041",
+    "title": "Beneficiary’s Share of Income, Deductions, Credits, etc.",
+    "year": 2025,
+    "omb_number": "1545-0092",
+    "department": "Department of the Treasury - Internal Revenue Service"
+  },
+  "form_status": {
+    "final_k1": false,
+    "amended_k1": false
+  },
+  "tax_year": {
+    "calendar_year": 2025,
+    "beginning_date": null,
+    "ending_date": null
+  },
+  "part_I_information_about_estate_or_trust": {
+    "A_estate_or_trust_tin": null,
+    "B_estate_or_trust_name": null,
+    "C_fiduciary_information": {
+      "name": null,
+      "address": null,
+      "city": null,
+      "state": null,
+      "zip_code": null
+    },
+    "D_form_1041T_filed": {
+      "checked": false,
+      "date_filed": null
+    },
+    "E_final_form_1041_for_estate_or_trust": false
+  },
+  "part_II_information_about_the_beneficiary": {
+    "F_beneficiary_identifying_number": null,
+    "G_beneficiary_information": {
+      "name": null,
+      "address": null,
+      "city": null,
+      "state": null,
+      "zip_code": null
+    },
+    "H_beneficiary_type": {
+      "domestic_beneficiary": false,
+      "foreign_beneficiary": false
+    }
+  },
+  "part_III_beneficiary_share_of_current_year_income_deductions_credits_and_other_items": {
+    "box_1_interest_income": null,
+    "box_2a_ordinary_dividends": null,
+    "box_2b_qualified_dividends": null,
+    "box_3_net_short_term_capital_gain": null,
+    "box_4a_net_long_term_capital_gain": null,
+    "box_4b_28_percent_rate_gain": null,
+    "box_4c_unrecaptured_section_1250_gain": null,
+    "box_5_other_portfolio_and_nonbusiness_income": null,
+    "box_6_ordinary_business_income": null,
+    "box_7_net_rental_real_estate_income": null,
+    "box_8_other_rental_income": null,
+    "box_9_directly_apportioned_deductions": null,
+    "box_10_estate_tax_deduction": null,
+    "box_11_final_year_deductions": null,
+    "box_12_alternative_minimum_tax_adjustment": null,
+    "box_13_credits_and_credit_recapture": null,
+    "box_14_other_information": null
+  },
+  "additional_notes": {
+    "attached_statement_reference": true,
+    "description": "Statement may be attached showing beneficiary's share of income and deductions from business, rental real estate, and other activities."
+  },
+  "metadata": {
+    "parts": 3,
+    "boxes_total": 14,
+    "has_checkboxes": true,
+    "supports_multiple_income_types": true,
+    "form_purpose": "Report beneficiary’s share of estate or trust income, deductions, and credits"
+  }
+}

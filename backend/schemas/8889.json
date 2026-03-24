@@ -1,0 +1,72 @@
+{
+  "form": {
+    "form_number": "8889",
+    "title": "Health Savings Accounts (HSAs)",
+    "year": 2025,
+    "omb_number": "1545-0074",
+    "attachment_sequence_number": "52",
+    "department": "Department of the Treasury - Internal Revenue Service",
+    "attached_to_forms": ["1040", "1040-SR", "1040-NR"]
+  },
+
+  "taxpayer_information": {
+    "name_on_return": null,
+    "social_security_number": null
+  },
+
+  "part_I_hsa_contributions_and_deduction": {
+
+    "coverage_type": {
+      "self_only": false,
+      "family": false
+    },
+
+    "line_2_hsa_contributions_for_year": null,
+    "line_3_contribution_limit": null,
+    "line_4_employer_and_other_contributions": null,
+    "line_5_subtract_line4_from_line3": null,
+    "line_6_contribution_limit_adjustment": null,
+    "line_7_additional_contribution_if_age_55_or_older": null,
+    "line_8_total_contribution_limit": null,
+    "line_9_employer_contributions_to_hsa": null,
+    "line_10_qualified_hsa_funding_distribution": null,
+    "line_11_total_contributions": null,
+    "line_12_subtract_line11_from_line8": null,
+    "line_13_hsa_deduction": null
+  },
+
+  "part_II_hsa_distributions": {
+
+    "line_14a_total_distributions_received": null,
+    "line_14b_rollover_distributions": null,
+    "line_14c_subtract_line14b_from_line14a": null,
+
+    "line_15_qualified_medical_expenses_paid": null,
+
+    "line_16_taxable_hsa_distributions": null,
+
+    "line_17a_exception_to_additional_20_percent_tax_checkbox": false,
+
+    "line_17b_additional_20_percent_tax": null
+  },
+
+  "part_III_income_and_additional_tax_for_failure_to_maintain_hdhd_coverage": {
+
+    "line_18_last_month_rule": null,
+
+    "line_19_qualified_hsa_funding_distribution": null,
+
+    "line_20_total_income": null,
+
+    "line_21_additional_tax": null
+  },
+
+  "metadata": {
+    "parts": 3,
+    "total_lines": 21,
+    "has_checkboxes": true,
+    "supports_joint_filing": true,
+    "form_purpose": "Report HSA contributions, deductions, distributions, and additional taxes",
+    "related_forms": ["1040 Schedule 1", "Schedule 2"]
+  }
+}

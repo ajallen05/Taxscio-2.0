@@ -1,0 +1,108 @@
+{
+  "form_id": "1040",
+  "form_name": "U.S. Individual Income Tax Return",
+  "tax_year": 2025,
+  "source_documents": ["w2_extraction_001", "1099_int_extraction_001"],
+  "filled_at": "2025-12-16T14:22:00Z",
+  "auto_filled_by": "data_mapper_engine",
+  "taxpayer_information": {
+    "first_name": "John",
+    "middle_initial": "M",
+    "last_name": "Smith",
+    "ssn": "123-45-6789",
+    "spouse_first_name": null,
+    "spouse_last_name": null,
+    "spouse_ssn": null,
+    "home_address": "123 Oak Street",
+    "apt_number": null,
+    "city": "New York",
+    "state": "NY",
+    "zip_code": "10001",
+    "foreign_country": null,
+    "foreign_province": null,
+    "foreign_postal_code": null
+  },
+  "filing_status": {
+    "single": true,
+    "married_filing_jointly": false,
+    "married_filing_separately": false,
+    "head_of_household": false,
+    "qualifying_surviving_spouse": false
+  },
+  "digital_assets": {
+    "received_or_sold_digital_assets": false
+  },
+  "dependents": [],
+  "income": {
+    "line_1a_total_wages": 75000.0,
+    "line_1b_household_employee_wages": 0.0,
+    "line_1c_tip_income": 0.0,
+    "line_1d_medicaid_waiver_payments": null,
+    "line_1e_taxable_dependent_care_benefits": null,
+    "line_1f_employer_adoption_benefits": null,
+    "line_1g_wages_from_form_8919": null,
+    "line_1h_other_earned_income": 5000.0,
+    "line_2_interest": 250.0,
+    "line_3_dividends": 1500.0,
+    "line_5b_taxable_capital_gain": 2000.0
+  },
+  "standard_deduction": {
+    "standard_deduction_checked": true,
+    "standard_deduction_amount": 14600
+  },
+  "line_7_total_income": 83750.0,
+  "line_12_taxable_income": 69150.0,
+  "line_15_tax": 8300.0,
+  "credits": {
+    "line_24_total_credits": 0.0
+  },
+  "payments": {
+    "line_33_federal_income_tax_withheld": 12500.0,
+    "line_35_total_payments": 12500.0
+  },
+  "balance": {
+    "line_36_refund": 4200.0
+  },
+  "validation_summary": {
+    "valid_fields": 18,
+    "requires_review_fields": 0,
+    "missing_required_fields": 0,
+    "confidence_score": 0.97,
+    "status": "ready_for_cpa_review",
+    "field_confidence_breakdown": {
+      "high_confidence": 16,
+      "medium_confidence": 2,
+      "low_confidence": 0
+    }
+  },
+  "audit_trail": [
+    {
+      "timestamp": "2025-12-15T08:00:00Z",
+      "action": "document_uploaded",
+      "source": "client_portal"
+    },
+    {
+      "timestamp": "2025-12-15T08:05:00Z",
+      "action": "w2_extracted",
+      "engine": "ocr_engine",
+      "confidence": 0.96
+    },
+    {
+      "timestamp": "2025-12-15T08:10:00Z",
+      "action": "data_validated",
+      "validation_score": 1.0
+    },
+    {
+      "timestamp": "2025-12-15T08:15:00Z",
+      "action": "1040_autofilled",
+      "mapper": "data_mapper_engine",
+      "fields_populated": 9
+    },
+    {
+      "timestamp": "2025-12-15T08:20:00Z",
+      "action": "confidence_scored",
+      "overall_score": 0.97,
+      "recommendation": "approve_and_proceed"
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "marketplace_name": null,
+  "marketplace_identifier": null,
+  "marketplace_telephone": null,
+  "policy_issuer_name": null,
+  "state": null,
+  "policy_number": null,
+  "policy_start_date": null,
+  "policy_termination_date": null,
+  "recipient_name": null,
+  "recipient_ssn": null,
+  "recipient_date_of_birth": null,
+  "recipient_address": null,
+  "recipient_city_state_zip": null,
+  "tax_year": 2024,
+  "spouse_name": null,
+  "spouse_ssn": null,
+  "spouse_date_of_birth": null,
+  "covered_individuals": null,
+  "part_3_annual_totals": {
+    "col_a_annual_premium": null,
+    "col_b_annual_slcsp": null,
+    "col_c_annual_advance_payment": null
+  },
+  "part_3_monthly": {
+    "jan": {"col_a_monthly_premium": null, "col_b_monthly_slcsp": null, "col_c_monthly_advance_payment": null},
+    "feb": {"col_a_monthly_premium": null, "col_b_monthly_slcsp": null, "col_c_monthly_advance_payment": null},
+    "mar": {"col_a_monthly_premium": null, "col_b_monthly_slcsp": null, "col_c_monthly_advance_payment": null},
+    "apr": {"col_a_monthly_premium": null, "col_b_monthly_slcsp": null, "col_c_monthly_advance_payment": null},
+    "may": {"col_a_monthly_premium": null, "col_b_monthly_slcsp": null, "col_c_monthly_advance_payment": null},
+    "jun": {"col_a_monthly_premium": null, "col_b_monthly_slcsp": null, "col_c_monthly_advance_payment": null},
+    "jul": {"col_a_monthly_premium": null, "col_b_monthly_slcsp": null, "col_c_monthly_advance_payment": null},
+    "aug": {"col_a_monthly_premium": null, "col_b_monthly_slcsp": null, "col_c_monthly_advance_payment": null},
+    "sep": {"col_a_monthly_premium": null, "col_b_monthly_slcsp": null, "col_c_monthly_advance_payment": null},
+    "oct": {"col_a_monthly_premium": null, "col_b_monthly_slcsp": null, "col_c_monthly_advance_payment": null},
+    "nov": {"col_a_monthly_premium": null, "col_b_monthly_slcsp": null, "col_c_monthly_advance_payment": null},
+    "dec": {"col_a_monthly_premium": null, "col_b_monthly_slcsp": null, "col_c_monthly_advance_payment": null}
+  }
+}
