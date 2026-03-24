@@ -1061,15 +1061,8 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results, setResu
                                 </React.Fragment>
                             ))}
                         </div>
-                        <div className="ai-summary">
-                            <div className="ai-summary-icon">❆</div>
-                            <div className="ai-summary-text">
-                                <div className="ai-badge">❆ AI Summary</div>
-                                <p><strong>{client.name}</strong>: {clientSummary.overview} AI has processed <strong>{clientSummary.processedCount} of {clientSummary.totalLinkedDocs}</strong> linked document(s) for this client.</p>
-                            </div>
-                        </div>
                         <div className="key-figures">
-                            {[['Documents Uploaded', clientSummary.uploadedCount, null, ''], ['Completed', clientSummary.validatedCount, 'green', ''], ['Exceptions', clientExceptionTotal, 'red', '']].map(([l, v, c, s]) => (
+                            {[['Documents Linked', clientSummary.totalLinkedDocs, null, ''], ['Processed', clientSummary.processedCount, 'green', ''], ['Exceptions', clientExceptionTotal, 'red', '']].map(([l, v, c, s]) => (
                                 <div key={l} className="key-fig">
                                     <div className="key-fig-label">{l}</div>
                                     <div className="key-fig-value" style={c ? { color: `var(--${c})` } : {}}>{v}</div>

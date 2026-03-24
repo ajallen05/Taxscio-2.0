@@ -1,6 +1,4 @@
-from datetime import datetime
-
-from sqlalchemy import Column, Integer, String, Text, JSON, Float, DateTime
+from sqlalchemy import Column, Integer, String, Text, JSON, Float
 from .database import Base
 
 class Ledger(Base):
@@ -42,19 +40,3 @@ class DocumentLog(Base):
     cpa = Column(String)
     due_date = Column(String)
     confidence_score = Column(Float)
-
-
-class ExceptionEscalation(Base):
-    """CPA escalation events from the Exceptions UI (persisted server-side)."""
-    __tablename__ = "exception_escalations"
-    id = Column(Integer, primary_key=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    document_id = Column(String, nullable=True)
-    client_name = Column(String, nullable=True)
-    document_type = Column(String, nullable=True)
-    filename = Column(String, nullable=True)
-    exception_code = Column(String, nullable=True)
-    exception_field = Column(String, nullable=True)
-    severity = Column(String, nullable=True)
-    description = Column(Text, nullable=True)
-    payload = Column(JSON, nullable=True)

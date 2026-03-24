@@ -1,7 +1,7 @@
 from datetime import datetime
 import time
 
-from .models import DocumentLog, ExceptionEscalation, Ledger
+from .models import DocumentLog, Ledger
 from .utils import generate_document_id
 from .version_utils import compute_content_hash, has_content_changed
 
@@ -199,23 +199,8 @@ def record_exception_escalation(
     extra=None,
 ):
     """
-    Persist an escalation row and, when a matching ledger entry exists,
-    append an exception_escalated event to its audit_trail.
+    Persist escalation directly in ledger.audit_trail (single-table flow).
     """
-    row = ExceptionEscalation(
-        document_id=document_id or None,
-        client_name=client_name or None,
-        document_type=document_type or None,
-        filename=filename or None,
-        exception_code=exception_code or None,
-        exception_field=exception_field or None,
-        severity=severity or None,
-        description=description or None,
-        payload=extra if isinstance(extra, dict) else {},
-    )
-    db.add(row)
-    db.flush()
-
     ledger = None
     if document_id:
         ledger = db.query(Ledger).filter(Ledger.document_id == document_id).first()
@@ -225,20 +210,26 @@ def record_exception_escalation(
             Ledger.document_type == document_type,
         ).first()
 
-    if ledger:
-        audit = list(ledger.audit_trail or [])
-        audit.append(
-            {
-                "type": "exception_escalated",
-                "time": datetime.utcnow().isoformat() + "Z",
-                "exception_code": exception_code,
-                "exception_field": exception_field,
-                "severity": severity,
-                "filename": filename,
-                "escalation_id": row.id,
-            }
-        )
-        ledger.audit_trail = audit
+    if not ledger:
+        db.commit()
+        return {"escalation_id": None, "ledger_linked": False}
+
+    escalation_id = int(time.time() * 1000)
+    audit = list(ledger.audit_trail or [])
+    audit.append(
+        {
+            "type": "exception_escalated",
+            "time": datetime.utcnow().isoformat() + "Z",
+            "exception_code": exception_code,
+            "exception_field": exception_field,
+            "severity": severity,
+            "filename": filename,
+            "description": description,
+            "payload": extra if isinstance(extra, dict) else {},
+            "escalation_id": escalation_id,
+        }
+    )
+    ledger.audit_trail = audit
 
     db.commit()
-    return {"escalation_id": row.id, "ledger_linked": ledger is not None}
+    return {"escalation_id": escalation_id, "ledger_linked": True}
