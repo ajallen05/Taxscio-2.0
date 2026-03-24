@@ -86,7 +86,6 @@ EXCEPTION_REGISTRY = {
     "NUM_DECIMAL_MISPLACE":     ("Numeric & Arithmetic", "Decimal Misplacement", "Cross-field plausibility check", "WARNING"),
     "NUM_LARGE_OUTLIER":        ("Numeric & Arithmetic", "Large Statistical Outlier", "Route to Intelligence layer", "WARNING"),
     "NUM_DUPLICATE_ENTRY":      ("Numeric & Arithmetic", "Duplicate Monetary Entry", "Cross-box validation", "WARNING"),
-    "FORM_INVALID_CODE":        ("Numeric & Arithmetic", "Invalid Form Code", "Reject invalid code value", "BLOCKING"),
     "ID_INVALID_SSN":           ("Identity & Entity", "Invalid SSN Format", "Reject document", "BLOCKING"),
     "ID_INVALID_TIN":           ("Identity & Entity", "Invalid TIN Format", "Reject document", "BLOCKING"),
     "ID_MASKED_SSN":            ("Identity & Entity", "Masked SSN", "Accept but flag masked", "WARNING"),
@@ -1402,7 +1401,7 @@ class ValidationEngine:
                 codes = [c.strip().upper() for c in re.split(r'[,/\s]+', str(code)) if c.strip()]
                 for c in codes:
                     if c not in VALID_1099R_CODES:
-                        excs.append(self._make_exc("FORM_INVALID_CODE",
+                        excs.append(self._make_exc("DB_TYPE_CONFLICT",
                             f"1099-R Box 7 distribution code '{c}' is not a valid IRS code. "
                             f"Valid codes: {sorted(VALID_1099R_CODES)}",
                             field="distribution_code", value=c))
