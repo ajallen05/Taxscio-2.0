@@ -791,6 +791,132 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results, setResu
         return rows.slice(0, 60);
     }, [clientDocumentRows, clientFiles]);
 
+    const clientSummary = useMemo(() => {
+        const stageOrder = {
+            'Document Collection': 1,
+            'AI Processing': 2,
+            'Exception Review': 3,
+            'CPA Review': 4,
+            'Client Approval': 5,
+            'Ready to E-File': 6,
+            'Filed & Confirmed': 7,
+            'Validation': 2,
+        };
+
+        let stage = 'Document Collection';
+        let stageRank = 0;
+        const confVals = [];
+        let validatedCount = 0;
+        let needsReviewCount = 0;
+        let processedCount = 0;
+        let uploadedCount = 0;
+
+        clientDocumentRows.forEach((row) => {
+            const rowStage = row.kind === 'ledger'
+                ? (row.stage || 'Document Collection')
+                : getStageFromFile(row.file, row.result);
+            const rank = stageOrder[rowStage] || 0;
+            if (rank > stageRank) {
+                stageRank = rank;
+                stage = rowStage;
+            }
+
+            if (row.validation === 'Validated') validatedCount += 1;
+            if ((row.exceptions || 0) > 0 || row.validation === 'Needs review') needsReviewCount += 1;
+            if (row.kind === 'upload') uploadedCount += 1;
+            // "Processed" means the document has entered AI/ledger pipeline and is no longer just collected.
+            if (row.kind === 'ledger' || rowStage !== 'Document Collection') processedCount += 1;
+
+            if (row.kind === 'upload') {
+                const c = row.result?.document_confidence;
+                if (typeof c === 'number') confVals.push(Math.round(c * 100));
+            } else if (typeof row.conf === 'number') {
+                confVals.push(row.conf);
+            }
+        });
+
+        const avgConfidence = confVals.length
+            ? Math.round(confVals.reduce((a, b) => a + b, 0) / confVals.length)
+            : null;
+        const totalLinkedDocs = clientDocumentRows.length;
+
+        const latest = clientActivityRows[0] || null;
+        const overview = totalLinkedDocs === 0
+            ? 'No client documents are linked yet.'
+            : `${totalLinkedDocs} document(s) linked. Stage: ${stage}. ${clientExceptionTotal} open exception(s).`;
+
+        return {
+            overview,
+            stage,
+            avgConfidence,
+            totalLinkedDocs,
+            uploadedCount,
+            processedCount,
+            validatedCount,
+            needsReviewCount,
+            latestActivity: latest ? `${latest.action} (${latest.date})` : 'No activity yet',
+        };
+    }, [clientDocumentRows, clientActivityRows, clientExceptionTotal]);
+
+    const clientAISummary = useMemo(() => {
+        const docs = clientDocumentRows;
+        const formSet = new Set(docs.map((d) => String(d.form || '').toUpperCase()).filter(Boolean));
+        const has1040 = Array.from(formSet).some((f) => f.includes('1040'));
+        const hasW2 = Array.from(formSet).some((f) => f.includes('W-2'));
+        const has1099 = Array.from(formSet).some((f) => f.includes('1099'));
+        const escalations = clientActivityRows.filter((a) => a.action === 'Exception Escalated').length;
+        const completedUploads = clientFiles.filter((f) => f.status === 'completed').length;
+
+        const executive = [
+            `${client.name} has ${docs.length} linked document(s) across ${formSet.size || 0} form type(s).`,
+            `Current pipeline stage is ${clientSummary.stage}; ${clientSummary.validatedCount} document(s) are validated.`,
+            clientSummary.avgConfidence !== null
+                ? `Average extraction confidence is ${clientSummary.avgConfidence}%.`
+                : 'Confidence is not available yet for this client.',
+        ];
+
+        const risks = [];
+        if (clientExceptionTotal > 0) risks.push(`${clientExceptionTotal} open exception(s) require CPA attention.`);
+        if (clientSummary.needsReviewCount > 0) risks.push(`${clientSummary.needsReviewCount} document(s) are marked as needing review.`);
+        if (clientSummary.avgConfidence !== null && clientSummary.avgConfidence < 80) risks.push('Low confidence trend (<80%) may increase manual correction workload.');
+        if (escalations > 0) risks.push(`${escalations} exception(s) were escalated and should be checked in activity history.`);
+        if (!risks.length) risks.push('No immediate compliance risk signals detected from current document set.');
+
+        const nextActions = [
+            clientExceptionTotal > 0
+                ? 'Resolve or override open exceptions in Engagement.'
+                : 'Run a final validation sweep before CPA sign-off.',
+            completedUploads < docs.length
+                ? 'Finish processing queued/in-progress uploads.'
+                : 'Proceed to CPA review and client approval workflow.',
+            'Use Documents tab JSON view to confirm critical identity and income fields.',
+        ];
+
+        const missingDocs = [];
+        if (has1040 && !hasW2) missingDocs.push('W-2 not detected alongside 1040.');
+        if (has1040 && !has1099) missingDocs.push('No 1099 forms detected for a 1040 engagement.');
+        if (!has1040 && docs.length > 0) missingDocs.push('Primary 1040 return not detected yet.');
+        if (!missingDocs.length) missingDocs.push('No obvious missing recurring forms detected from current set.');
+
+        return { executive, risks, nextActions, missingDocs };
+    }, [client.name, clientDocumentRows, clientActivityRows, clientFiles, clientSummary, clientExceptionTotal]);
+
+    const summaryStepIndex = useMemo(() => {
+        const m = {
+            'Document Collection': 0,
+            'AI Processing': 1,
+            'Validation': 1,
+            'Exception Review': 2,
+            'CPA Review': 2,
+            'Client Approval': 3,
+            'Ready to E-File': 4,
+            'E-File': 4,
+            'Filed & Confirmed': 5,
+            'Confirmed': 5,
+        };
+        return m[clientSummary.stage] ?? 0;
+    }, [clientSummary.stage]);
+
     const selectedDocumentRow = useMemo(
         () => clientDocumentRows.find((r) => r.key === selectedDocKey) || null,
         [clientDocumentRows, selectedDocKey],
@@ -927,11 +1053,11 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results, setResu
                         <div className="stepper">
                             {['Document Collection', 'AI Processing', 'CPA Review', 'Client Approval', 'E-File', 'Confirmed'].map((s, i) => (
                                 <React.Fragment key={s}>
-                                    <div className={`step${i === 0 ? ' completed' : i === 1 ? ' current' : ''}`}>
-                                        <div className="step-dot">{i === 0 ? '✓' : i + 1}</div>
+                                    <div className={`step${i < summaryStepIndex ? ' completed' : i === summaryStepIndex ? ' current' : ''}`}>
+                                        <div className="step-dot">{i < summaryStepIndex ? '✓' : i + 1}</div>
                                         <div className="step-label">{s}</div>
                                     </div>
-                                    {i < 5 && <div className={`step-line${i === 0 ? ' done' : ''}`} />}
+                                    {i < 5 && <div className={`step-line${i < summaryStepIndex ? ' done' : ''}`} />}
                                 </React.Fragment>
                             ))}
                         </div>
@@ -939,17 +1065,52 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results, setResu
                             <div className="ai-summary-icon">❆</div>
                             <div className="ai-summary-text">
                                 <div className="ai-badge">❆ AI Summary</div>
-                                <p>AI has processed <strong>{clientFiles.filter(f => f.status === 'completed').length} of {clientFiles.length}</strong> documents for this client. <strong>{clientExceptionTotal} exceptions</strong> require attention.</p>
+                                <p><strong>{client.name}</strong>: {clientSummary.overview} AI has processed <strong>{clientSummary.processedCount} of {clientSummary.totalLinkedDocs}</strong> linked document(s) for this client.</p>
                             </div>
                         </div>
                         <div className="key-figures">
-                            {[['Documents Uploaded', clientFiles.length, null, ''], ['Completed', clientFiles.filter(f => f.status === 'completed').length, 'green', ''], ['Exceptions', clientExceptionTotal, 'red', '']].map(([l, v, c, s]) => (
+                            {[['Documents Uploaded', clientSummary.uploadedCount, null, ''], ['Completed', clientSummary.validatedCount, 'green', ''], ['Exceptions', clientExceptionTotal, 'red', '']].map(([l, v, c, s]) => (
                                 <div key={l} className="key-fig">
                                     <div className="key-fig-label">{l}</div>
                                     <div className="key-fig-value" style={c ? { color: `var(--${c})` } : {}}>{v}</div>
                                     <div className="key-fig-sub">{s}</div>
                                 </div>
                             ))}
+                        </div>
+                        <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
+                            {[
+                                ['Current Stage', clientSummary.stage],
+                                ['Average Confidence', clientSummary.avgConfidence !== null ? `${clientSummary.avgConfidence}%` : '—'],
+                                ['Validated Documents', String(clientSummary.validatedCount)],
+                                ['Needs Review', String(clientSummary.needsReviewCount)],
+                                ['Latest Activity', clientSummary.latestActivity],
+                            ].map(([label, value]) => (
+                                <div key={label} style={{ background: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: 12 }}>
+                                    <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 6 }}>{label}</div>
+                                    <div style={{ fontSize: 13, color: 'var(--text-secondary)', fontWeight: 600 }}>{value}</div>
+                                </div>
+                            ))}
+                        </div>
+                        <div style={{ marginTop: 16, background: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: 14 }}>
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 10 }}>
+                                AI Summary (Structured + Narrative)
+                            </div>
+                            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Executive Summary</div>
+                            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                                {clientAISummary.executive.map((t) => <li key={t}>{t}</li>)}
+                            </ul>
+                            <div style={{ fontSize: 12, fontWeight: 700, margin: '10px 0 6px' }}>Top Risks</div>
+                            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                                {clientAISummary.risks.map((t) => <li key={t}>{t}</li>)}
+                            </ul>
+                            <div style={{ fontSize: 12, fontWeight: 700, margin: '10px 0 6px' }}>Next Actions</div>
+                            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                                {clientAISummary.nextActions.map((t) => <li key={t}>{t}</li>)}
+                            </ul>
+                            <div style={{ fontSize: 12, fontWeight: 700, margin: '10px 0 6px' }}>Missing Docs Signals</div>
+                            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                                {clientAISummary.missingDocs.map((t) => <li key={t}>{t}</li>)}
+                            </ul>
                         </div>
                     </div>
                 )}
