@@ -1657,6 +1657,15 @@ function ClientMatchModal({ modal, apiUrl, onDismiss, onAssociated }) {
     );
 }
 
+function normalizeClientKey(name) {
+    if (!name) return '—';
+    return name
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // PAGE: FILING PIPELINE  (live from files + results)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1667,45 +1676,12 @@ function PagePipeline({ files, results, apiUrl }) {
     const [ledgerRows, setLedgerRows] = useState([]);
     const [ledgerError, setLedgerError] = useState(null);
     const [expandedClients, setExpandedClients] = useState(new Set());
-    const [clientsMap, setClientsMap] = useState({});
 
     const toggleClient = (name) => setExpandedClients(prev => {
         const s = new Set(prev);
         s.has(name) ? s.delete(name) : s.add(name);
         return s;
     });
-
-    // ── Fetch client data to build lookup map by name ──────────────────────
-    useEffect(() => {
-        const base = apiUrl !== undefined ? apiUrl : 'http://localhost:8000';
-        
-        async function fetchClients() {
-            try {
-                const res = await fetch(`${base}/clients?limit=500&offset=0`);
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                const clients = await res.json();
-                const map = {};
-                clients.forEach(client => {
-                    // Map by both individual and business name
-                    if (client.first_name && client.last_name) {
-                        map[`${client.first_name} ${client.last_name}`] = client;
-                    }
-                    if (client.business_name) {
-                        map[client.business_name] = client;
-                    }
-                    if (client.trust_name) {
-                        map[client.trust_name] = client;
-                    }
-                });
-                setClientsMap(map);
-                console.log('Clients fetched successfully:', map);
-            } catch (err) {
-                console.error('Failed to fetch clients:', err);
-            }
-        }
-        
-        fetchClients();
-    }, [apiUrl]);
 
     // ── Poll the ledger endpoint every 10 s ───────────────────────────────
     useEffect(() => {
@@ -1768,7 +1744,7 @@ function PagePipeline({ files, results, apiUrl }) {
 
         // Extract client name from data
         let clientName = f.file.name;
-        if (r?.extracted_fields) {
+        if (r?.extracted_fields || r?.data) {
             const findName = (d) => {
                 if (!d || typeof d !== 'object' || Array.isArray(d)) return null;
                 const clientSuffixes = ['name_on_return', 'taxpayer_name', 'employee_name', 'partner_name', 'beneficiary_name', 'shareholder_name', 'client_name', 'payee_name', 'filer_name', 'recipient_name', 'transferor_name'];
@@ -1807,7 +1783,7 @@ function PagePipeline({ files, results, apiUrl }) {
                 }
                 return null;
             };
-            const extractedName = findName(r.extracted_fields);
+            const extractedName = findName(r.extracted_fields || r.data);
             if (extractedName) clientName = extractedName;
         }
 
@@ -1825,13 +1801,13 @@ function PagePipeline({ files, results, apiUrl }) {
     // Deduplicate: ledger rows take precedence, then live rows not already in ledger
     // Match based on document_id (if available) or name (as fallback)
     const ledgerIds = new Set(ledgerRows.map(r => r.document_id).filter(Boolean));
-    const ledgerNames = new Set(ledgerRows.map(r => r.name));
+    const ledgerNamesNorm = new Set(ledgerRows.map(r => normalizeClientKey(r.name)));
 
     const deduped = [
         ...ledgerRows,
         ...liveRows.filter(r => {
             if (r.document_id && ledgerIds.has(r.document_id)) return false;
-            if (ledgerNames.has(r.name)) return false;
+            if (ledgerNamesNorm.has(normalizeClientKey(r.name))) return false;
             return true;
         }),
     ];
@@ -1924,13 +1900,18 @@ function PagePipeline({ files, results, apiUrl }) {
             )}
 
             {view === 'table' && (() => {
-                // Group filtered rows by client name
-                const grouped = filtered.reduce((acc, row) => {
-                    const key = row.name || '—';
-                    if (!acc[key]) acc[key] = [];
-                    acc[key].push(row);
-                    return acc;
-                }, {});
+                // Group by normalized key but display the original name from the first row
+                const _groupMap = {};
+                filtered.forEach(row => {
+                    const nk = normalizeClientKey(row.name);
+                    if (!_groupMap[nk]) {
+                        _groupMap[nk] = { displayName: row.name || '—', rows: [] };
+                    }
+                    _groupMap[nk].rows.push(row);
+                });
+                const grouped = Object.fromEntries(
+                    Object.entries(_groupMap).map(([nk, { displayName, rows }]) => [displayName, rows])
+                );
 
                 // Status priority for dominant status
                 const statusPriority = { exception: 3, processing: 2, approved: 1, pending: 0 };
@@ -1970,9 +1951,9 @@ function PagePipeline({ files, results, apiUrl }) {
                                 const conf = avgConf(rows);
                                 const confCls = conf != null ? (conf >= 90 ? 'high' : conf >= 75 ? 'medium' : 'low') : '';
                                 
-                                // Get client data from map
-                                const client = clientsMap[clientName];
-                                const clientStage = client?.lifecycle_stage || '—';
+                                // Parent status
+                                const parentStatusMap = { rejected: 1, exception: 2, processing: 3, pending: 4, review: 5, approved: 6, filed: 7 };
+                                const parentStatus = rows.map(r => r.status).sort((a,b) => (parentStatusMap[a] || 9) - (parentStatusMap[b] || 9))[0] || '—';
 
                                 return (
                                     <React.Fragment key={clientName}>
@@ -1992,12 +1973,19 @@ function PagePipeline({ files, results, apiUrl }) {
                                                     {rows.length}
                                                 </span>
                                             </td>
-                                            <td style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 500 }}>{clientStage}</td>
-                                            <td>
-                                                <span style={{ color: 'var(--text-muted)' }}>—</span>
+                                            <td style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 500 }}>
+                                                {mostAdvancedStage(rows)}
                                             </td>
                                             <td>
-                                                <span style={{ color: 'var(--text-muted)' }}>—</span>
+                                                {(() => {
+                                                    const c = avgConf(rows);
+                                                    if (c == null) return <span style={{ color: 'var(--text-muted)' }}>—</span>;
+                                                    const cls = c >= 90 ? 'high' : c >= 75 ? 'med' : 'low';
+                                                    return <span className={`confidence-badge ${cls}`}>{c}%</span>;
+                                                })()}
+                                            </td>
+                                            <td>
+                                                <StatusPill status={dominantStatus(rows)} />
                                             </td>
                                         </tr>
 
@@ -2088,6 +2076,211 @@ function ExcCard({ exc, apiUrl, onAccept, onOverride }) {
 // ═══════════════════════════════════════════════════════════════════════════
 // LIVE EXCEPTION CARD — matches Image 1 card grid layout
 // ═══════════════════════════════════════════════════════════════════════════
+/**
+ * Classify an exception as AUTO (AI can fix deterministically) or
+ * MANUAL (correct value does not exist in the system — human must supply it).
+ *
+ * Returns: "AUTO" | "MANUAL"
+ */
+/**
+ * Classify an exception as AUTO (AI can fix deterministically) or
+ * MANUAL (correct value does not exist in the system — human must supply it).
+ *
+ * Built from the complete Taxscio exception taxonomy (90+ exception types
+ * across 15 categories). The rule: AUTO if and only if the correct value
+ * can be computed or derived from data already in the system.
+ *
+ * Returns: "AUTO" | "MANUAL"
+ */
+function classifyException(exc) {
+    const code = (exc.code || exc.exception_id || '').toUpperCase();
+    const severity = (exc.severity || '').toUpperCase();
+
+    // ── RULE 1: proposed_value is the ground truth ────────────────────────
+    // If the backend computed a concrete value to insert, it's AUTO regardless
+    // of the code. If no concrete value exists, Accept AI Suggestion is meaningless.
+    const hasProposedValue = (
+        exc.proposed_value !== null &&
+        exc.proposed_value !== undefined &&
+        exc.proposed_value !== '' &&
+        exc.proposed_value !== 'undefined'
+    ) || (
+        exc.auto_fix_value !== null &&
+        exc.auto_fix_value !== undefined &&
+        exc.auto_fix_value !== '' &&
+        exc.auto_fix_value !== 'undefined'
+    );
+
+    // ── RULE 2: _source from backend classification is authoritative ──────
+    // auto_fixer.py already made this decision. Trust it.
+    // BUT: fixable + no proposed_value = MANUAL (the fixer knew the rule
+    // but couldn't compute the value)
+    if (exc._source === 'fixable') {
+        return hasProposedValue ? 'AUTO' : 'MANUAL';
+    }
+    if (exc._source === 'review') return 'MANUAL';
+
+    // ── RULE 3: CRITICAL severity → always MANUAL ─────────────────────────
+    if (severity === 'CRITICAL') return 'MANUAL';
+
+    // ── RULE 4: Exact code matching against real auto_fixer.py codes ──────
+    const FIXABLE_CODES = new Set([
+        'FLD_ZERO_VS_BLANK',
+        'FLD_DASH_SYMBOL',
+        'FLD_NA_TEXT',
+        'FLD_CHECKBOX_BLANK',
+        'FLD_SPECIAL_CHARS',
+        'LLM_OVER_NORMALIZATION',
+    ]);
+
+    const REVIEW_CODES = new Set([
+        'NUM_NEGATIVE_VALUE',
+        'NUM_DECIMAL_MISPLACE',
+        'NUM_LARGE_OUTLIER',
+        'NUM_WITHHOLDING_GT_INC',
+        'NUM_DUPLICATE_ENTRY',
+        'NUM_SUBTOTAL_MISMATCH',
+        'ID_INVALID_SSN',
+        'ID_INVALID_TIN',
+        'ID_MASKED_SSN',
+        'ID_DUPLICATE_DEP_SSN',
+        'FORM_INVALID_CODE',
+        'FLD_ILLEGIBLE',
+        'FLD_ADDRESS_COLLAPSED',
+    ]);
+
+    if (FIXABLE_CODES.has(code)) return hasProposedValue ? 'AUTO' : 'MANUAL';
+    if (REVIEW_CODES.has(code)) return 'MANUAL';
+
+    // ── RULE 5: proposed_value fallback for unknown codes ─────────────────
+    if (hasProposedValue) return 'AUTO';
+
+    // ── RULE 6: default → MANUAL ──────────────────────────────────────────
+    return 'MANUAL';
+}
+
+/**
+ * Client-side field format validator.
+ * Runs BEFORE /apply-fixes is called.
+ * Returns an error message string on failure, null on pass.
+ */
+function validateFieldInput(field, value) {
+    if (value === null || value === undefined) return null;
+    const v = String(value).trim();
+    const f = (field || '').toLowerCase();
+
+    if (v === '') return null;
+
+    // ── SSN: XXX-XX-XXXX or 9 raw digits ────────────────────────────
+    if (f.includes('ssn') || f === 'employee_ssn' || f === 'recipient_ssn') {
+        const digits = v.replace(/\D/g, '');
+        if (digits.length !== 9) {
+            return 'Enter the SSN in format XXX-XX-XXXX (e.g. 123-45-6789).';
+        }
+        if (/^0{9}$/.test(digits) || /^1{9}$/.test(digits)) {
+            return 'SSN cannot be all the same digit.';
+        }
+        if (digits.startsWith('9')) {
+            return 'SSNs cannot begin with 9 — that is an ITIN format. Use the ITIN field instead.';
+        }
+        return null;
+    }
+
+    // ── ITIN: 9XX-XX-XXXX ───────────────────────────────────────────
+    if (f.includes('itin')) {
+        const digits = v.replace(/\D/g, '');
+        if (digits.length !== 9 || !digits.startsWith('9')) {
+            return 'ITIN must be 9 digits starting with 9 (format: 9XX-XX-XXXX).';
+        }
+        return null;
+    }
+
+    // ── EIN / TIN / Payer TIN: XX-XXXXXXX or 9 raw digits ──────────
+    if (f.includes('ein') || f.includes('payer_tin') || f.includes('employer_id')
+        || f === 'tin' || f.includes('_tin')) {
+        const digits = v.replace(/\D/g, '');
+        if (digits.length !== 9) {
+            return 'Enter the TIN/EIN in format XX-XXXXXXX (e.g. 12-3456789).';
+        }
+        if (/^0{9}$/.test(digits)) {
+            return 'TIN/EIN cannot be all zeros.';
+        }
+        return null;
+    }
+
+    // ── Tax year ─────────────────────────────────────────────────────
+    if (f === 'tax_year' || f.includes('tax_year')) {
+        const yr = parseInt(v, 10);
+        if (isNaN(yr) || String(yr) !== v) {
+            return 'Tax year must be a 4-digit number (e.g. 2025)';
+        }
+        if (yr < 1990 || yr > 2035) {
+            return `Tax year ${yr} is outside the valid range (1990–2035)`;
+        }
+        return null;
+    }
+
+    // ── Currency / monetary amounts ──────────────────────────────────
+    const CURRENCY_FIELDS = [
+        'wages', 'income', 'amount', 'payment', 'compensation',
+        'withheld', 'withholding', 'tax', 'salary', 'tip',
+        'distribution', 'dividend', 'interest', 'proceeds',
+        'gross', 'net', 'adjusted', 'deduction', 'credit',
+        'contribution', 'benefit', 'premium', 'cost', 'basis',
+    ];
+    const isCurrency = CURRENCY_FIELDS.some(kw => f.includes(kw));
+    if (isCurrency) {
+        const cleaned = v.replace(/[$,\s]/g, '');
+        const num = parseFloat(cleaned);
+        if (isNaN(num)) {
+            return 'Amount must be a number (e.g. 12000.00)';
+        }
+        if (num < 0) {
+            return 'Amount cannot be negative for this field';
+        }
+        if (num > 99_999_999) {
+            return 'Amount exceeds maximum allowed value ($99,999,999)';
+        }
+        return null;
+    }
+
+    // ── Percentages ──────────────────────────────────────────────────
+    if (f.includes('rate') || f.includes('percent') || f.includes('pct')) {
+        const num = parseFloat(v);
+        if (isNaN(num)) return 'Must be a number';
+        if (num < 0 || num > 100) return 'Percentage must be between 0 and 100';
+        return null;
+    }
+
+    // ── ZIP code ─────────────────────────────────────────────────────
+    if (f.includes('zip') || f.includes('postal')) {
+        if (!/^\d{5}(-\d{4})?$/.test(v)) {
+            return 'ZIP code must be 5 digits (e.g. 10022) or 9 digits (e.g. 10022-1234)';
+        }
+        return null;
+    }
+
+    // ── State code ───────────────────────────────────────────────────
+    if (f === 'state' || f.endsWith('_state')) {
+        if (!/^[A-Z]{2}$/.test(v.toUpperCase())) {
+            return 'State must be a 2-letter code (e.g. NY, CA)';
+        }
+        return null;
+    }
+
+    // ── Date fields ──────────────────────────────────────────────────
+    if (f.includes('date') || f.includes('_dob') || f.includes('birth')) {
+        const d = new Date(v);
+        if (isNaN(d.getTime())) {
+            return 'Must be a valid date (e.g. 2025-01-15 or 01/15/2025)';
+        }
+        return null;
+    }
+
+    // No rule matched — pass through to backend
+    return null;
+}
+
 // LIVE EXCEPTION CARD — matches Image 1 card grid layout
 // ═══════════════════════════════════════════════════════════════════════════
 function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}, documentId: documentIdProp }) {
@@ -2095,10 +2288,21 @@ function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}
     const [overrideVal, setOverrideVal] = useState('');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
+    const [validationError, setValidationError] = useState(null);
     const [escalated, setEscalated] = useState(false);
     const [escalationMeta, setEscalationMeta] = useState(null);
     const [hidden, setHidden] = useState(false);
     const baseApiUrl = (apiUrl || 'http://localhost:8000').replace(/\/$/, '');
+
+    // Reset input state whenever the exception changes (new card or prop update)
+    useEffect(() => {
+        setOverrideVal('');
+        setValidationError(null);
+        setError(null);
+        setOverrideMode(false);
+        setEscalated(false);
+        setHidden(false);
+    }, [exc.field, exc.code]);
 
     // Normalise severity to high / medium / low
     const rawSev = (exc.severity || '').toUpperCase();
@@ -2133,27 +2337,115 @@ function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}
     const callAPI = async (fixValue) => {
         setLoading(true);
         setError(null);
+        setValidationError(null);
+
+        // ── Guard: insufficient form data ────────────────────────────────
+        // If docData has fewer than 3 keys, the engine cannot validate reliably.
+        // Skip the API call — client-side validation already ran and passed,
+        // so accept the value locally and close the card.
+        const docDataKeys = Object.keys(docData || {});
+        if (docDataKeys.length < 3) {
+            console.warn(
+                `[LiveExcCard] docData has ${docDataKeys.length} keys for field "${exc.field}".`,
+                'Engine validation skipped — accepting client-side validated value.'
+            );
+            if (onResolved) onResolved(excKey, null);
+            setTimeout(() => setHidden(true), 0);
+            setLoading(false);
+            return;
+        }
+
         try {
+            // Merge the submitted fix into docData so the engine validates
+            // the UPDATED state, not the original null state.
+            const patchedData = { ...docData };
+            if (exc.field && fixValue !== null && fixValue !== undefined) {
+                patchedData[exc.field] = fixValue;
+                Object.keys(patchedData).forEach(k => {
+                    if (k.toLowerCase().endsWith(`_${exc.field}`) ||
+                        k.toLowerCase().endsWith(`.${exc.field}`)) {
+                        patchedData[k] = fixValue;
+                    }
+                });
+            }
+
             const body = {
                 form_type: formType,
-                data: docData,
+                data: patchedData,
                 fixes: exc.field ? [{ field: exc.field, new_value: fixValue }] : [],
                 pdf_type: 'digital',
                 human_verified_fields: exc.field ? [exc.field] : [],
+                context: { filename },
             };
+
             const r = await fetch(`${baseApiUrl}/apply-fixes`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body),
             });
+
             const data = await r.json().catch(() => ({}));
+
             if (!r.ok) {
                 setError(data?.error || data?.message || `Save failed (${r.status})`);
                 return;
             }
-            // Remove card only after successful save.
-            setHidden(true);
-            if (onResolved) onResolved(excKey, data);
+
+            // ── EXCEPTION FLAGGING LOOP ──────────────────────────────────────
+            // Contract:
+            //   - Field still failing → show inline error on THIS card, stop.
+            //     The exception must NOT appear as a new card — it belongs here.
+            //   - Field passing → strip this field from response, hide card,
+            //     propagate so other field exceptions can surface as new cards.
+
+            const allReturnedExceptions = [
+                ...(data.exceptions || []),
+                ...(data.fixable_exceptions || []),
+                ...(data.review_exceptions || []),
+            ];
+
+            const thisFieldLower = (exc.field || '').toLowerCase();
+
+            const fieldStillFailing = exc.field
+                ? allReturnedExceptions.some(e =>
+                    (e.field || '').toLowerCase() === thisFieldLower
+                  )
+                : false;
+
+            if (fieldStillFailing) {
+                const failingExc = allReturnedExceptions.find(e =>
+                    (e.field || '').toLowerCase() === thisFieldLower
+                );
+                const reason = failingExc?.description
+                    || failingExc?.message
+                    || failingExc?.edit_hint
+                    || failingExc?.code
+                    || 'Value did not pass IRS validation rules';
+                setValidationError(`✗ ${reason}`);
+                setLoading(false);
+                return;  // STOP. Card stays open. Nothing propagates.
+            }
+
+            // Field is clean. Strip this field from the response before
+            // propagating — prevents it reappearing as a new exception card.
+            const stripThisField = (arr) =>
+                (arr || []).filter(e =>
+                    (e.field || '').toLowerCase() !== thisFieldLower
+                );
+
+            const sanitizedData = {
+                ...data,
+                exceptions:         stripThisField(data.exceptions),
+                fixable_exceptions: stripThisField(data.fixable_exceptions),
+                review_exceptions:  stripThisField(data.review_exceptions),
+            };
+
+            // Update parent state first, then hide this card.
+            // This prevents a double-render where the card briefly reappears
+            // because the parent re-rendered before setHidden took effect.
+            if (onResolved) onResolved(excKey, sanitizedData);
+            setTimeout(() => setHidden(true), 0);
+
         } catch (e) {
             setError(e?.message || 'Network error');
         } finally {
@@ -2162,13 +2454,27 @@ function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}
     };
 
     const handleAccept = () => {
-        const fixVal = exc.proposed_value ?? exc.auto_fix_value ?? exc.current_value ?? '';
+        const fixVal = exc.proposed_value ?? exc.auto_fix_value ?? undefined;
+        if (fixVal === undefined || fixVal === null || fixVal === '') {
+            setError('No AI-proposed value available — enter a value manually.');
+            return;
+        }
         callAPI(fixVal);
     };
 
     const handleOverrideConfirm = () => {
-        if (!overrideVal.trim()) return;
-        callAPI(overrideVal);
+        const val = overrideVal.trim();
+        if (!val) return;
+
+        // Client-side format validation BEFORE the API call
+        const formatError = validateFieldInput(exc.field, val);
+        if (formatError) {
+            setValidationError(formatError);
+            return;
+        }
+
+        setValidationError(null);
+        callAPI(val);
     };
 
     const handleEscalate = async () => {
@@ -2247,6 +2553,20 @@ function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}
                 )}
             </div>
 
+            {classifyException(exc) === 'AUTO' && !overrideMode && !escalated && (
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                    <button
+                        type="button"
+                        style={{ background: 'none', border: 'none', cursor: 'pointer',
+                                 color: 'var(--text-muted)', fontSize: 11, padding: 0,
+                                 textDecoration: 'underline' }}
+                        onClick={() => setOverrideMode(true)}
+                    >
+                        Enter different value instead
+                    </button>
+                </div>
+            )}
+
             {error && (
                 <div style={{ fontSize: 11, color: 'var(--red)', marginBottom: 8 }}>{error}</div>
             )}
@@ -2271,44 +2591,141 @@ function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}
                 </div>
             )}
 
-            {!overrideMode ? (
-                <div className="exception-actions">
-                    <button type="button" className="btn btn-success" onClick={handleAccept} disabled={loading || escalated}>
-                        {loading ? 'Applying…' : 'Accept AI Suggestion'}
-                    </button>
-                    <button type="button" className="btn btn-secondary" onClick={() => setOverrideMode(true)} disabled={loading || escalated}>
-                        Override
-                    </button>
-                    <button
-                        type="button"
-                        className="btn btn-danger"
-                        disabled={loading || escalated}
-                        onClick={handleEscalate}
-                    >
-                        {loading ? 'Sending…' : escalated ? 'Escalated' : 'Escalate'}
-                    </button>
-                </div>
-            ) : (
-                <div className="exception-actions" style={{ flexDirection: 'column', gap: 8 }}>
-                    <input
-                        type="text"
-                        style={{ width: '100%', padding: '8px 12px', fontSize: 13, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', outline: 'none', background: 'var(--surface-1)' }}
-                        placeholder={`Enter corrected value for ${fieldLabel || 'this field'}…`}
-                        value={overrideVal}
-                        onChange={e => setOverrideVal(e.target.value)}
-                        onKeyDown={e => e.key === 'Enter' && handleOverrideConfirm()}
-                        autoFocus
-                    />
-                    <div style={{ display: 'flex', gap: 8 }}>
-                        <button className="btn btn-success" onClick={handleOverrideConfirm} disabled={loading || !overrideVal.trim()}>
-                            {loading ? 'Saving…' : 'Confirm Override'}
-                        </button>
-                        <button className="btn btn-secondary" onClick={() => { setOverrideMode(false); setOverrideVal(''); }}>
-                            Cancel
-                        </button>
+            {(() => {
+                const excType = classifyException(exc);
+
+                if (excType === 'AUTO' && !overrideMode) {
+                    const proposedVal = exc.proposed_value ?? exc.auto_fix_value;
+                    const proposedDisplay = proposedVal !== null && proposedVal !== undefined
+                        ? String(proposedVal)
+                        : null;
+
+                    return (
+                        <div className="exception-actions">
+                            <button
+                                type="button"
+                                className="btn btn-success"
+                                onClick={handleAccept}
+                                disabled={loading || escalated}
+                                title={proposedDisplay
+                                    ? `AI fix: set ${exc.field} → ${proposedDisplay}`
+                                    : 'Apply AI suggestion'}
+                            >
+                                {loading ? 'Applying…' : `Accept AI Suggestion${proposedDisplay ? ` (→ ${proposedDisplay})` : ''}`}
+                            </button>
+                            <button
+                                type="button"
+                                className="btn btn-danger"
+                                onClick={handleEscalate}
+                                disabled={loading || escalated}
+                            >
+                                {loading ? 'Sending…' : escalated ? 'Escalated' : 'Escalate'}
+                            </button>
+                        </div>
+                    );
+                }
+
+                if (excType === 'MANUAL' && !overrideMode) {
+                    const hint = exc.edit_hint
+                        || `Enter correct value for ${(exc.field || '').replace(/_/g, ' ')}…`;
+
+                    return (
+                        <div className="exception-actions" style={{ flexDirection: 'column', gap: 8 }}>
+                            <div style={{
+                                fontSize: 11,
+                                color: 'var(--amber)',
+                                background: 'rgba(217,119,6,.08)',
+                                border: '1px solid rgba(217,119,6,.2)',
+                                borderRadius: 4,
+                                padding: '6px 10px',
+                                lineHeight: 1.5,
+                            }}>
+                                ✎ Human input required — AI cannot determine the correct value for this field.
+                            </div>
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                <input
+                                    type="text"
+                                    style={{
+                                        flex: 1,
+                                        padding: '8px 12px',
+                                        fontSize: 13,
+                                        border: `1px solid ${validationError ? 'var(--red)' : 'var(--border)'}`,
+                                        borderRadius: 'var(--radius-sm)',
+                                        outline: 'none',
+                                        background: 'var(--surface-1)',
+                                    }}
+                                    placeholder={hint}
+                                    value={overrideVal}
+                                    onChange={e => { setOverrideVal(e.target.value); setValidationError(null); }}
+                                    onKeyDown={e => e.key === 'Enter' && overrideVal.trim() && handleOverrideConfirm()}
+                                    autoFocus
+                                />
+                                <button
+                                    className="btn btn-success"
+                                    onClick={handleOverrideConfirm}
+                                    disabled={loading || !overrideVal.trim()}
+                                >
+                                    {loading ? 'Validating…' : 'Submit'}
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn btn-danger"
+                                    onClick={handleEscalate}
+                                    disabled={loading || escalated}
+                                >
+                                    Escalate
+                                </button>
+                            </div>
+                            {validationError && (
+                                <div style={{ fontSize: 11, color: 'var(--red)', marginTop: 2 }}>
+                                    ✗ {validationError}
+                                </div>
+                            )}
+                        </div>
+                    );
+                }
+
+                // AUTO in override mode
+                return (
+                    <div className="exception-actions" style={{ flexDirection: 'column', gap: 8 }}>
+                        <input
+                            type="text"
+                            style={{
+                                width: '100%',
+                                padding: '8px 12px',
+                                fontSize: 13,
+                                border: `1px solid ${validationError ? 'var(--red)' : 'var(--border)'}`,
+                                borderRadius: 'var(--radius-sm)',
+                                outline: 'none',
+                                background: 'var(--surface-1)',
+                            }}
+                            placeholder={`Enter corrected value for ${fieldLabel || 'this field'}…`}
+                            value={overrideVal}
+                            onChange={e => { setOverrideVal(e.target.value); setValidationError(null); }}
+                            onKeyDown={e => e.key === 'Enter' && handleOverrideConfirm()}
+                            autoFocus
+                        />
+                        {validationError && (
+                            <div style={{ fontSize: 11, color: 'var(--red)' }}>✗ {validationError}</div>
+                        )}
+                        <div style={{ display: 'flex', gap: 8 }}>
+                            <button
+                                className="btn btn-success"
+                                onClick={handleOverrideConfirm}
+                                disabled={loading || !overrideVal.trim()}
+                            >
+                                {loading ? 'Validating…' : 'Confirm Override'}
+                            </button>
+                            <button
+                                className="btn btn-secondary"
+                                onClick={() => { setOverrideMode(false); setOverrideVal(''); setValidationError(null); }}
+                            >
+                                Cancel
+                            </button>
+                        </div>
                     </div>
-                </div>
-            )}
+                );
+            })()}
         </div>
     );
 }
@@ -2329,16 +2746,22 @@ function PageExceptions({ files, results, apiUrl, setResults }) {
 
         const push = (exc) => allCards.push({ exc, formType, filename, result: r });
 
-        // Collect from all three arrays — deduplicate by code+field
+        // Collect from all three arrays — deduplicate by code+field, tag source
         const seen = new Set();
-        const dedup = (arr) => (arr || []).forEach(exc => {
-            const key = `${exc.code}:${exc.field}`;
-            if (!seen.has(key)) { seen.add(key); push(exc); }
+        const dedup = (arr, source) => (arr || []).forEach(exc => {
+            const key = `${exc.code || ''}:${exc.field || ''}`;
+            if (!seen.has(key)) {
+                seen.add(key);
+                push({ ...exc, _source: source });
+            }
         });
 
-        dedup(r.exceptions);
-        dedup(r.fixable_exceptions);
-        dedup(r.review_exceptions);
+        // CRITICAL ORDER: classified arrays first so their _source tag wins.
+        // r.exceptions is the raw full list — only add exceptions not already
+        // captured by the classified arrays.
+        dedup(r.fixable_exceptions, 'fixable');
+        dedup(r.review_exceptions,  'review');
+        dedup(r.exceptions,         'exceptions');
     });
 
     // Stats
@@ -2428,35 +2851,82 @@ function PageExceptions({ files, results, apiUrl, setResults }) {
                                 filename={card.filename}
                                 apiUrl={apiUrl}
                                 documentId={card.result?.document_id}
-                                docData={card.result.extracted_fields || card.result.data || {}}
+                                docData={(() => {
+                                    const r = card.result || {};
+                                    // Try all known locations where extraction stores fields.
+                                    const candidate =
+                                        r.extracted_fields ||
+                                        r.data ||
+                                        r.raw_normalized_json ||
+                                        r.formatted_json ||
+                                        {};
+
+                                    // If the candidate is nested, flatten one level
+                                    // to match what flatten_for_validation() does on the backend.
+                                    const isNested = Object.values(candidate).some(
+                                        v => v !== null && typeof v === 'object' && !Array.isArray(v)
+                                    );
+
+                                    if (isNested) {
+                                        const flat = {};
+                                        for (const [k, v] of Object.entries(candidate)) {
+                                            if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+                                                Object.assign(flat, v);
+                                            } else {
+                                                flat[k] = v;
+                                            }
+                                        }
+                                        return flat;
+                                    }
+
+                                    return candidate;
+                                })()}
                                 onResolved={(excKey, apiData) => {
                                     if (!setResults) return;
                                     setResults(prev => {
                                         const fileResult = prev[card.filename];
                                         if (!fileResult) return prev;
 
-                                        // If the API returned a fresh exceptions list, use it directly
-                                        if (apiData && Array.isArray(apiData.exceptions)) {
-                                            return {
-                                                ...prev,
-                                                [card.filename]: { ...fileResult, ...apiData },
-                                            };
+                                        // Always prune the resolved exception by key.
+                                        const removeByKey = (arr) =>
+                                            (arr || []).filter(e =>
+                                                `${e.code || ''}:${e.field || ''}` !== excKey
+                                            );
+
+                                        const pruned = {
+                                            ...fileResult,
+                                            exceptions:          removeByKey(fileResult.exceptions),
+                                            fixable_exceptions:  removeByKey(fileResult.fixable_exceptions),
+                                            review_exceptions:   removeByKey(fileResult.review_exceptions),
+                                        };
+
+                                        // If apiData is null (local accept from guard) — use pruned only.
+                                        if (!apiData) {
+                                            return { ...prev, [card.filename]: pruned };
                                         }
 
-                                        // Otherwise remove this exception by code:field key from all three arrays
-                                        const removeByKey = (arr) =>
-                                            (arr || []).filter(e => `${e.code || ''}:${e.field || ''}` !== excKey);
+                                        // Merge apiData into pruned. Only replace exception arrays
+                                        // if the engine found something new (non-empty arrays).
+                                        const merged = { ...pruned };
 
-                                        return {
-                                            ...prev,
-                                            [card.filename]: {
-                                                ...fileResult,
-                                                exceptions: removeByKey(fileResult.exceptions),
-                                                fixable_exceptions: removeByKey(fileResult.fixable_exceptions),
-                                                review_exceptions: removeByKey(fileResult.review_exceptions),
-                                                ...(apiData && typeof apiData === 'object' ? apiData : {}),
-                                            },
-                                        };
+                                        if (Array.isArray(apiData.exceptions) && apiData.exceptions.length > 0) {
+                                            merged.exceptions = apiData.exceptions;
+                                        }
+                                        if (Array.isArray(apiData.fixable_exceptions) && apiData.fixable_exceptions.length > 0) {
+                                            merged.fixable_exceptions = apiData.fixable_exceptions;
+                                        }
+                                        if (Array.isArray(apiData.review_exceptions) && apiData.review_exceptions.length > 0) {
+                                            merged.review_exceptions = apiData.review_exceptions;
+                                        }
+
+                                        // Merge other fields (confidence, data, etc.)
+                                        // but never let apiData's empty arrays overwrite pruned's.
+                                        const safeApiData = { ...apiData };
+                                        delete safeApiData.exceptions;
+                                        delete safeApiData.fixable_exceptions;
+                                        delete safeApiData.review_exceptions;
+
+                                        return { ...prev, [card.filename]: { ...merged, ...safeApiData } };
                                     });
                                 }}
                             />
@@ -2680,55 +3150,79 @@ function PageIngestion({
     });
 
     const handleApproveAll = async () => {
-        if (!activeResult || !sessionId) return;
+        if (!activeResult) return;
         setApproving(true);
+        const formType = activeResult.form_type || activeIngestionFile;
         const fields = activeResult.extracted_fields || activeResult.data || {};
-        const corrections = Object.keys(flattenObject(fields)).map(k => ({ field: k, value: String(flattenObject(fields)[k] ?? '') }));
+        const flat = flattenObject(fields);
+        const fixes = Object.entries(flat).map(([field, val]) => ({
+            field,
+            new_value: val,
+        }));
+        const humanVerifiedFields = Object.keys(flat);
         try {
-            const res = await fetch(`${apiUrl}/api/correct`, {
-                method: 'POST', credentials: 'include',
-                headers: { 'Content-Type': 'application/json', 'X-Session-ID': sessionId },
-                body: JSON.stringify({ corrections, human_verified_fields: Object.keys(flattenObject(fields)) }),
+            const res = await fetch(`${apiUrl}/apply-fixes`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    form_type: formType,
+                    data: fields,
+                    fixes,
+                    pdf_type: activeResult.pdf_type || 'digital',
+                    human_verified_fields: humanVerifiedFields,
+                }),
             });
             if (res.ok) {
                 const updated = await res.json();
-                const resultData = updated.data && updated.ok ? updated.data : updated;
                 setResults(prev => ({
                     ...prev,
                     [activeIngestionFile]: {
                         ...prev[activeIngestionFile],
-                        ...resultData,
-                        extracted_fields: resultData.extracted_fields || resultData.data || prev[activeIngestionFile].extracted_fields
-                    }
+                        ...updated,
+                        validation_complete: true,
+                    },
                 }));
             }
-        } catch { }
+        } catch (e) {
+            console.error('handleApproveAll failed:', e);
+        }
         setApproving(false);
     };
 
     const handleSaveEdits = async () => {
-        if (!sessionId || !Object.keys(editedFields).length) return;
-        const corrections = Object.entries(editedFields).map(([field, value]) => ({ field, value }));
+        if (!activeIngestionFile || !Object.keys(editedFields).length) return;
+        const formType = (activeResult?.form_type) || activeIngestionFile;
+        const fields   = activeResult?.extracted_fields || activeResult?.data || {};
+        const fixes = Object.entries(editedFields).map(([field, val]) => ({
+            field,
+            new_value: val,
+        }));
         try {
-            await fetch(`${apiUrl}/api/correct`, {
-                method: 'POST', credentials: 'include',
-                headers: { 'Content-Type': 'application/json', 'X-Session-ID': sessionId },
-                body: JSON.stringify({ corrections, human_verified_fields: Object.keys(editedFields) }),
+            const res = await fetch(`${apiUrl}/apply-fixes`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    form_type: formType,
+                    data: fields,
+                    fixes,
+                    pdf_type: activeResult?.pdf_type || 'digital',
+                    human_verified_fields: Object.keys(editedFields),
+                    context: { filename: activeIngestionFile },
+                }),
             });
-            if (activeResult && setResults) {
-                const nr = JSON.parse(JSON.stringify(results));
-                corrections.forEach(({ field, value }) => {
-                    if (nr[activeIngestionFile]) {
-                        const flat = nr[activeIngestionFile].data || {};
-                        const keys = field.split('.');
-                        let cur = flat;
-                        for (let i = 0; i < keys.length - 1; i++) { if (cur[keys[i]]) cur = cur[keys[i]]; }
-                        cur[keys[keys.length - 1]] = value;
-                    }
-                });
-                setResults(nr);
+            if (res.ok) {
+                const updated = await res.json();
+                setResults(prev => ({
+                    ...prev,
+                    [activeIngestionFile]: {
+                        ...prev[activeIngestionFile],
+                        ...updated,
+                    },
+                }));
             }
-        } catch { }
+        } catch (e) {
+            console.error('handleSaveEdits failed:', e);
+        }
         setEditMode(false);
         setEditedFields({});
     };
@@ -2978,13 +3472,68 @@ function PageAIRules() {
 // ═══════════════════════════════════════════════════════════════════════════
 // PAGE: REPORTS
 // ═══════════════════════════════════════════════════════════════════════════
-function PageReports({ apiUrl, sessionId }) {
-    const handleExport = async () => {
-        if (!sessionId) return alert('No active session. Upload a document first.');
-        try {
-            const r = await fetch(`${apiUrl}/api/export`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', 'X-Session-ID': sessionId }, body: JSON.stringify({ format: 'json' }) });
-            if (r.ok) { const b = await r.blob(); const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(b), download: 'taxscio_export.json' }); a.click(); URL.revokeObjectURL(a.href); }
-        } catch { }
+function PageReports({ apiUrl, sessionId, results }) {
+    const handleExport = async (format = 'json') => {
+        const sid = sessionId;
+        if (sid) {
+            try {
+                const r = await fetch(`${apiUrl}/api/export`, {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json', 'X-Session-ID': sid },
+                    body: JSON.stringify({ format }),
+                });
+                if (r.ok) {
+                    const b = await r.blob();
+                    const cd = r.headers.get('Content-Disposition');
+                    const name = (cd && cd.split('filename=')[1]) || `export.${format}`;
+                    const a = Object.assign(document.createElement('a'), {
+                        href: URL.createObjectURL(b),
+                        download: name,
+                    });
+                    a.click();
+                    URL.revokeObjectURL(a.href);
+                    return;
+                }
+            } catch { /* fall through to client-side export */ }
+        }
+
+        if (!results || !Object.keys(results).length) {
+            alert('No extracted data to export. Upload and process a document first.');
+            return;
+        }
+        const exportData = {
+            exported_at: new Date().toISOString(),
+            documents: Object.entries(results).map(([filename, r]) => ({
+                filename,
+                form_type: r?.form_type,
+                data: r?.extracted_fields || r?.data || {},
+                exceptions_count: (r?.exceptions?.length || 0) + (r?.fixable_exceptions?.length || 0),
+            })),
+        };
+
+        if (format === 'csv') {
+            const first = exportData.documents[0];
+            if (!first) return;
+            const flat = Object.entries(first.data || {});
+            const csv = ['field,value', ...flat.map(([k, v]) => `${k},${String(v ?? '')}`)].join('\n');
+            const b = new Blob([csv], { type: 'text/csv' });
+            const a = Object.assign(document.createElement('a'), {
+                href: URL.createObjectURL(b),
+                download: `taxscio_export.csv`,
+            });
+            a.click();
+            URL.revokeObjectURL(a.href);
+        } else {
+            const json = JSON.stringify(exportData, null, 2);
+            const b = new Blob([json], { type: 'application/json' });
+            const a = Object.assign(document.createElement('a'), {
+                href: URL.createObjectURL(b),
+                download: `taxscio_export.json`,
+            });
+            a.click();
+            URL.revokeObjectURL(a.href);
+        }
     };
     const reports = [
         ['📊', 'Filing Summary Report', 'Overview of all filings: completed, in-progress, pending. Includes refund/balance totals and form type breakdown.'],
@@ -3475,7 +4024,7 @@ function ProfileDropdown({ open, onClose, onNavigate }) {
 // ═══════════════════════════════════════════════════════════════════════════
 export default function App() {
     const isDev = import.meta.env.DEV;
-    const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+    const apiUrl = import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace(/\/$/, '') : '';
 
     // ── Layout state ──────────────────────────────────────────────────────
     const [currentPage, setCurrentPage] = useState('dashboard');
@@ -3702,13 +4251,11 @@ export default function App() {
 
     // Export
     const handleExport = useCallback(async (format = 'json') => {
-        const sid = getSessionId();
-        if (!sid) return;
         try {
-            const r = await fetch(`${apiUrl}/api/export`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', 'X-Session-ID': sid }, body: JSON.stringify({ format }) });
+            const r = await fetch(`${apiUrl}/ledger/export?format=${format}`, { method: 'GET' });
             if (r.ok) { const b = await r.blob(); const cd = r.headers.get('Content-Disposition'); const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(b), download: (cd && cd.split('filename=')[1]) || `export.${format}` }); a.click(); URL.revokeObjectURL(a.href); }
         } catch { }
-    }, [getSessionId, apiUrl]);
+    }, [apiUrl]);
 
     // Document drop for Documents page
     const handleDocDrop = useCallback((fileList) => {
@@ -3906,7 +4453,7 @@ export default function App() {
                         />
                     )}
                     {currentPage === 'airules' && <PageAIRules />}
-                    {currentPage === 'reports' && <PageReports apiUrl={apiUrl} sessionId={getSessionId()} />}
+                    {currentPage === 'reports' && <PageReports apiUrl={apiUrl} sessionId={getSessionId()} results={results} />}
                     {currentPage === 'identity' && <PageIdentity />}
                     {currentPage === 'integrations' && <PageIntegrations />}
                     {currentPage === 'organization' && <PageOrganization />}

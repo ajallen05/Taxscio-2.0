@@ -122,3 +122,40 @@ def get_ledger():
         return jsonify({"error": str(e)}), 500
     finally:
         db.close()
+
+@ledger_bp.route("/export", methods=["GET"])
+def export_ledger():
+    if not SessionLocal:
+        from flask import jsonify
+        return jsonify({"error": "Database not configured"}), 500
+    format_type = request.args.get("format", "json")
+    db = SessionLocal()
+    try:
+        ledgers = db.query(Ledger).all()
+        result = []
+        for l in ledgers:
+            result.append({
+                "document_id": l.document_id,
+                "client_name": l.client_name,
+                "document_type": l.document_type,
+                "stage": l.stage,
+                "status": l.status,
+                "confidence_score": l.confidence_score,
+                "provider": l.provider,
+            })
+        if format_type == "csv":
+            import io, csv
+            from flask import Response
+            si = io.StringIO()
+            if result:
+                writer = csv.DictWriter(si, fieldnames=result[0].keys())
+                writer.writeheader()
+                writer.writerows(result)
+            return Response(si.getvalue(), mimetype="text/csv", headers={"Content-Disposition": "attachment; filename=ledger_export.csv"})
+        from flask import jsonify
+        return jsonify(result)
+    except Exception as e:
+        from flask import jsonify
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()

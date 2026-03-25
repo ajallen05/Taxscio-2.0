@@ -249,6 +249,31 @@ def _submit_to_ledger(
     finally:
         db.close()
 
+def _get_escalated_exceptions(document_id: str) -> list[dict]:
+    """Fetch escalated exceptions from the ledger audit trail to silence them."""
+    db = _ledger_get_session()
+    if db is None or not document_id:
+        return []
+    try:
+        from backend.ledger.models import Ledger
+        ledger = db.query(Ledger).filter(Ledger.document_id == document_id).first()
+        if not ledger or not ledger.audit_trail:
+            return []
+        escalated = []
+        for item in ledger.audit_trail:
+            if item.get("type") == "exception_escalated":
+                escalated.append({
+                    "code": item.get("exception_code"),
+                    "field": item.get("exception_field")
+                })
+        return escalated
+    except Exception as exc:
+        log.warning("Failed to fetch escalated exceptions: %s", exc)
+        return []
+    finally:
+        db.close()
+
+
 # ── Event / Agent logging ──────────────────────────────────────────────────────
 
 _event_log: list[dict[str, Any]] = []
@@ -1038,7 +1063,8 @@ async def api_extract(
         await log_event("EXTRACT", f"form={form_type} fields={len(normalized)} ocr={ocr_source}", session["session_id"])
 
         # ── Auto-submit ledger record ─────────────────────────────────────────
-        doc_id = _submit_to_ledger(
+        doc_id = await asyncio.to_thread(
+            _submit_to_ledger,
             filename=session.get("filename", "unknown_from_session"),
             form_type=form_type,
             confidence_score=integrity_data.get("document_confidence", 1.0),
@@ -1111,13 +1137,19 @@ async def api_correct(
 
         form_type = session["form_type"]
         extracted_fields = session["extracted_fields"]
+        doc_id = session.get("document_id")
 
-        result = _data_integrity.apply_fixes(
-            form_type=form_type,
-            extracted_fields=extracted_fields,
-            fixes=body.corrections,
-            pdf_type=session.get("pdf_type"),
-            human_verified_fields=body.human_verified_fields,
+        escalated = _get_escalated_exceptions(doc_id) if doc_id else []
+        context = {"workflow": {"escalated_exceptions": escalated}}
+
+        result = await asyncio.to_thread(
+            _data_integrity.apply_fixes,
+            form_type,
+            extracted_fields,
+            body.corrections,
+            context,
+            session.get("pdf_type"),
+            body.human_verified_fields
         )
         integrity_data = result["data"]
 
@@ -1134,7 +1166,8 @@ async def api_correct(
         await log_event("CORRECT", f"fixes={len(body.corrections)}", session["session_id"])
 
         # Update ledger status to VALIDATED
-        _submit_to_ledger(
+        await asyncio.to_thread(
+            _submit_to_ledger,
             filename=session.get("filename", "unknown"),
             form_type=form_type,
             confidence_score=integrity_data.get("document_confidence", 1.0),

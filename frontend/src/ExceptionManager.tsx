@@ -115,88 +115,21 @@ function SummaryBar({ summary, fixableCount, reviewCount, showSidePdf, setShowSi
     );
 }
 
-// ── Fixable exception row ─────────────────────────────────────────────────────
-function FixableRow({ exc, isApplied, onApply, onUndo, onIgnoreClick, isPendingIgnore, onConfirmIgnore, onCancelIgnore }) {
-    const s = SEV[exc.severity] || SEV.INFO;
-    return (
-        <div
-            className={`rounded-xl border mb-3 overflow-hidden transition-all duration-200 ${isApplied ? "opacity-40 pointer-events-none" : "hover:shadow-sm"}`}
-            style={{ borderColor: "#e2e2e5", background: isApplied ? "#f8f8f8" : "#ffffff" }}
-        >
-            <div className={`flex items-start gap-4 p-4 ${s.row}`} style={{ background: s.rowBg }}>
-                <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap mb-2">
-                        <SevBadge sev={exc.severity} />
-                        <code className="text-[10px] uppercase font-bold px-2 py-0.5 rounded font-mono"
-                            style={{ background: "#f1f1f3", color: "#5c5c66", border: "1px solid #e2e2e5" }}>
-                            {exc.code}
-                        </code>
-                        {exc.field && (
-                            <code className="text-[10px] uppercase font-bold px-2 py-0.5 rounded font-mono"
-                                style={{ background: "rgba(59,130,246,0.06)", color: "#2563eb", border: "1px solid rgba(59,130,246,0.15)" }}>
-                                {exc.field}
-                            </code>
-                        )}
-                    </div>
-                    <p className="text-sm mb-3" style={{ color: "#5c5c66", lineHeight: 1.5 }}>{exc.description}</p>
-                    <div className="flex items-center gap-3 p-3 rounded-lg"
-                        style={{ background: "rgba(22,163,74,0.05)", border: "1px solid rgba(22,163,74,0.12)" }}>
-                        <div className="w-6 h-6 rounded-full flex items-center justify-center shrink-0"
-                            style={{ background: "rgba(22,163,74,0.1)" }}>
-                            <span className="text-green-600 text-xs">✦</span>
-                        </div>
-                        <div>
-                            <span className="text-[10px] text-green-600 font-bold uppercase tracking-widest block leading-none mb-0.5">Proposed Fix</span>
-                            <span className="text-xs text-green-700 font-medium">{exc.fix_description}</span>
-                        </div>
-                    </div>
-                </div>
-                <div className="flex-shrink-0 flex flex-col items-end gap-2 pt-1">
-                    {isApplied ? (
-                        <div className="flex items-center gap-2">
-                            <span className="text-[10px] font-bold uppercase tracking-widest px-3 py-1.5 rounded-lg"
-                                style={{ background: "rgba(22,163,74,0.08)", color: "#16a34a", border: "1px solid rgba(22,163,74,0.18)" }}>
-                                ✓ Applied
-                            </span>
-                            <button onClick={onUndo} className="text-[10px] font-bold uppercase tracking-widest underline underline-offset-4"
-                                style={{ color: "#8e8e99" }}>Undo</button>
-                        </div>
-                    ) : isPendingIgnore ? (
-                        <div className="flex flex-col gap-2 items-end">
-                            <span className="text-[10px] font-bold uppercase text-amber-600">Are you sure?</span>
-                            <div className="flex items-center gap-2">
-                                <button onClick={onConfirmIgnore} className="text-[10px] font-bold uppercase tracking-widest text-white px-3 py-1.5 rounded transition-colors"
-                                    style={{ background: "#dc2626" }}>Yes, Ignore</button>
-                                <button onClick={onCancelIgnore} className="text-[10px] font-bold uppercase tracking-widest transition-colors"
-                                    style={{ color: "#8e8e99" }}>Cancel</button>
-                            </div>
-                        </div>
-                    ) : (
-                        <>
-                            <button onClick={onApply} className="text-xs font-bold uppercase tracking-widest text-white px-4 py-2 rounded-lg transition-colors active:scale-95"
-                                style={{ background: "#16a34a" }}>
-                                Apply Fix
-                            </button>
-                            <button onClick={onIgnoreClick} className="text-[10px] font-bold uppercase tracking-widest transition-colors"
-                                style={{ color: "#8e8e99" }}>Ignore</button>
-                        </>
-                    )}
-                </div>
-            </div>
-        </div>
-    );
-}
-
-// ── Review exception row ──────────────────────────────────────────────────────
-function ReviewRow({ exc, editValue, onChange, isSaved, onSave, onIgnoreClick, isPendingIgnore, onConfirmIgnore, onCancelIgnore }) {
+// ── Unified Exception Row ─────────────────────────────────────────────────────
+function ExceptionRow({
+    exc, hasAI, isApplied, onApply, onUndo, editValue, onChange, isSaved, onSave,
+    onIgnoreClick, isPendingIgnore, onConfirmIgnore, onCancelIgnore, onEscalate
+}) {
     const s = SEV[exc.severity] || SEV.INFO;
     const isDirty = editValue !== String(exc.current_value ?? "");
 
     return (
-        <div className="rounded-xl border mb-3 overflow-hidden transition-all duration-200 hover:shadow-sm"
-            style={{ borderColor: "#e2e2e5", background: "#ffffff" }}>
+        <div
+            className={`rounded-xl border mb-3 overflow-hidden transition-all duration-200 ${isApplied ? "opacity-40" : "hover:shadow-sm"}`}
+            style={{ borderColor: "#e2e2e5", background: isApplied ? "#f8f8f8" : "#ffffff" }}
+        >
             <div className={`p-5 ${s.row}`} style={{ background: s.rowBg }}>
-                <div className="flex items-start gap-5">
+                <div className="flex items-start gap-4">
                     <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap mb-2">
                             <SevBadge sev={exc.severity} />
@@ -213,50 +146,77 @@ function ReviewRow({ exc, editValue, onChange, isSaved, onSave, onIgnoreClick, i
                         </div>
                         <p className="text-sm font-medium mb-4" style={{ color: "#111113", lineHeight: 1.5 }}>{exc.description}</p>
 
-                        <div className="rounded-xl p-5 border mb-1"
-                            style={{ background: "#fafafa", borderColor: "rgba(139,92,246,0.15)" }}>
-                            <div className="flex items-center gap-2 mb-2">
-                                <span className="text-[10px] text-purple-600 font-bold uppercase tracking-widest">Manual Correction Terminal</span>
-                            </div>
-                            <p className="text-xs italic mb-4" style={{ color: "#8e8e99", lineHeight: 1.6 }}>{exc.edit_hint}</p>
-                            <div className="flex items-center gap-3">
-                                <div className="flex-1 relative">
-                                    <input
-                                        type="text"
-                                        value={editValue}
-                                        onChange={(e) => onChange(e.target.value)}
-                                        placeholder={exc.current_value != null ? String(exc.current_value) : "Enter value..."}
-                                        className="w-full px-4 py-3 rounded-xl border-2 font-mono text-sm focus:outline-none transition-all"
-                                        style={{
-                                            borderColor: isSaved ? "#16a34a" : isDirty ? "#7c3aed" : "#e2e2e5",
-                                            background: isSaved ? "rgba(22,163,74,0.04)" : isDirty ? "rgba(139,92,246,0.04)" : "#ffffff",
-                                        }}
-                                    />
-                                    {isDirty && !isSaved && (
-                                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-bold uppercase text-purple-600 animate-pulse tracking-widest">
-                                            Unsaved
-                                        </span>
-                                    )}
+                        {/* AI Suggestion Box */}
+                        {hasAI && !isApplied && (
+                            <div className="flex items-center justify-between p-4 rounded-xl border mb-3"
+                                style={{ background: "rgba(22,163,74,0.03)", borderColor: "rgba(22,163,74,0.15)" }}>
+                                <div className="flex items-center gap-3">
+                                    <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0"
+                                        style={{ background: "rgba(22,163,74,0.1)" }}>
+                                        <span className="text-green-600 text-sm">✦</span>
+                                    </div>
+                                    <div>
+                                        <span className="text-[10px] text-green-600 font-bold uppercase tracking-widest block leading-none mb-1">AI Proposed Fix</span>
+                                        <span className="text-sm text-green-700 font-bold">{exc.fix_description || `Set to: ${exc.proposed_value}`}</span>
+                                    </div>
                                 </div>
-                                <button
-                                    onClick={onSave}
-                                    disabled={!isDirty}
-                                    className="text-xs font-bold uppercase tracking-widest px-5 py-3.5 rounded-xl transition-all active:scale-95 whitespace-nowrap"
-                                    style={{
-                                        background: isSaved ? "#16a34a" : isDirty ? "#7c3aed" : "#e2e2e5",
-                                        color: isDirty || isSaved ? "#fff" : "#8e8e99",
-                                        cursor: isDirty ? "pointer" : "not-allowed",
-                                    }}
-                                >
-                                    {isSaved ? "✓ Field Saved" : "Save Changes"}
+                                <button onClick={onApply} className="text-xs font-bold uppercase tracking-widest text-white px-5 py-2.5 rounded-lg transition-colors active:scale-95 shadow-sm"
+                                    style={{ background: "#16a34a" }}>
+                                    Apply Suggestion
                                 </button>
                             </div>
-                        </div>
+                        )}
+
+                        {hasAI && isApplied && (
+                            <div className="flex items-center gap-3 p-3 rounded-xl border mb-3"
+                                style={{ background: "rgba(22,163,74,0.08)", borderColor: "rgba(22,163,74,0.15)" }}>
+                                <span className="text-[10px] font-bold uppercase tracking-widest text-green-600">✓ AI Fix Applied</span>
+                                <button onClick={onUndo} className="text-[10px] font-bold uppercase tracking-widest underline underline-offset-4 ml-auto" style={{ color: "#8e8e99" }}>Undo</button>
+                            </div>
+                        )}
+
+                        {/* Manual Override Input */}
+                        {!isApplied && (
+                            <div className="rounded-xl p-4 border"
+                                style={{ background: "#fafafa", borderColor: "rgba(139,92,246,0.15)" }}>
+                                <div className="flex items-center justify-between mb-3">
+                                    <span className="text-[10px] text-purple-600 font-bold uppercase tracking-widest">Override Terminal</span>
+                                    <span className="text-[10px] text-gray-500 uppercase font-medium">{hasAI ? "Or manually override" : "Manual input required"}</span>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    <div className="flex-1 relative">
+                                        <input
+                                            type="text"
+                                            value={editValue}
+                                            onChange={(e) => onChange(e.target.value)}
+                                            placeholder={exc.current_value != null ? String(exc.current_value) : "Enter override value..."}
+                                            className="w-full px-4 py-2.5 rounded-lg border-2 font-mono text-sm focus:outline-none transition-all"
+                                            style={{
+                                                borderColor: isSaved ? "#16a34a" : isDirty ? "#7c3aed" : "#e2e2e5",
+                                                background: isSaved ? "rgba(22,163,74,0.04)" : isDirty ? "rgba(139,92,246,0.04)" : "#ffffff",
+                                            }}
+                                        />
+                                    </div>
+                                    <button
+                                        onClick={onSave}
+                                        disabled={!isDirty}
+                                        className="text-[10px] font-bold uppercase tracking-widest px-5 py-3 rounded-lg transition-all active:scale-95 whitespace-nowrap text-white"
+                                        style={{
+                                            background: isSaved ? "#16a34a" : isDirty ? "#7c3aed" : "#e2e2e5",
+                                            color: isDirty || isSaved ? "#fff" : "#8e8e99",
+                                            cursor: isDirty || isSaved ? "pointer" : "not-allowed",
+                                        }}
+                                    >
+                                        {isSaved ? "Saved" : "Save Override"}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
                     </div>
-                    <div className="pt-2">
+                    <div className="pt-2 flex flex-col items-end gap-2 shrink-0">
                         {isPendingIgnore ? (
                             <div className="flex flex-col gap-2 items-end">
-                                <span className="text-[10px] font-bold uppercase text-amber-600">Ignore this?</span>
+                                <span className="text-[10px] font-bold uppercase text-amber-600">Dismiss?</span>
                                 <div className="flex items-center gap-2">
                                     <button onClick={onConfirmIgnore} className="text-[10px] font-bold uppercase tracking-widest text-white px-3 py-1.5 rounded"
                                         style={{ background: "#dc2626" }}>Yes</button>
@@ -265,10 +225,14 @@ function ReviewRow({ exc, editValue, onChange, isSaved, onSave, onIgnoreClick, i
                                 </div>
                             </div>
                         ) : (
-                            <button onClick={onIgnoreClick} className="text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5 px-3 py-2 rounded-lg transition-colors hover:bg-red-50"
-                                style={{ color: "#8e8e99" }}>
-                                <span>✕</span> Ignore
-                            </button>
+                            <>
+                                <button onClick={() => onEscalate(exc)} className="text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5 px-3 py-2 rounded-lg transition-colors text-red-500 hover:bg-red-50 border border-transparent hover:border-red-100">
+                                    <span>↑</span> Escalate
+                                </button>
+                                <button onClick={onIgnoreClick} className="text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5 px-3 py-2 rounded-lg transition-colors text-gray-400 hover:bg-gray-100 mt-1">
+                                    <span>✕</span> Ignore
+                                </button>
+                            </>
                         )}
                     </div>
                 </div>
@@ -346,6 +310,29 @@ export default function ExceptionManager({
     const handleUndoIgnore = useCallback((id) => {
         setIgnoredIds(prev => { const n = new Set(prev); n.delete(id); return n; });
     }, [setIgnoredIds]);
+    const handleEscalate = useCallback(async (exc) => {
+        try {
+            await fetch(`${apiUrl}/ledger/escalate-exception`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    document_id: data.document_id || "unknown",
+                    client_name: data.name_on_return || data.taxpayer_name || "unknown",
+                    document_type: formType,
+                    exception_code: exc.code,
+                    exception_field: exc.field,
+                    severity: exc.severity,
+                    description: exc.description,
+                    payload: data
+                })
+            });
+            // Auto hide the escalated exception locally:
+            setIgnoredIds(prev => new Set([...prev, getExcId(exc)]));
+        } catch (e) {
+            console.error("Escalation failed", e);
+        }
+    }, [apiUrl, formType, data, setIgnoredIds]);
+
     const handleApplyAllFixes = useCallback(() => {
         setAppliedFixes(new Set(fixableExceptions.map(e => e.code + ":" + e.field)));
     }, [fixableExceptions]);
@@ -458,7 +445,7 @@ export default function ExceptionManager({
                 <div className="rounded-xl border overflow-hidden" style={{ background: "#fff", borderColor: "rgba(22,163,74,0.2)" }}>
                     <div className="flex items-center justify-between px-4 py-3 border-b" style={{ background: "rgba(22,163,74,0.04)", borderColor: "rgba(22,163,74,0.15)" }}>
                         <div className="flex items-center gap-2">
-                            <span className="text-green-600 font-bold text-[10px] uppercase tracking-widest">⚡ Auto-Fixable</span>
+                            <span className="text-green-600 font-bold text-[10px] uppercase tracking-widest">⚡ AI Suggestion Available</span>
                             <span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{ background: "rgba(22,163,74,0.08)", color: "#16a34a", border: "1px solid rgba(22,163,74,0.18)" }}>
                                 {activeFixable.length}
                             </span>
@@ -469,15 +456,20 @@ export default function ExceptionManager({
                             disabled={appliedFixes.size === activeFixable.length}
                             className="text-[10px] font-bold uppercase tracking-widest px-3 py-1.5 rounded-lg transition-all text-white"
                             style={{ background: appliedFixes.size === activeFixable.length ? "#e2e2e5" : "#16a34a", color: appliedFixes.size === activeFixable.length ? "#8e8e99" : "#fff", cursor: appliedFixes.size === activeFixable.length ? "not-allowed" : "pointer" }}
-                        >Apply All</button>
+                        >Apply All Suggestions</button>
                     </div>
                     <div className="p-3">
                         {activeFixable.map((exc, i) => {
                             const key = exc.code + ":" + exc.field;
                             return (
-                                <FixableRow key={i} exc={exc}
+                                <ExceptionRow key={i} exc={exc}
+                                    hasAI={true}
                                     isApplied={appliedFixes.has(key)} isPendingIgnore={pendingIgnoreId === getExcId(exc)}
                                     onApply={() => handleApplyFix(exc)} onUndo={() => handleUndoFix(exc)}
+                                    editValue={editedValues[exc.field] ?? String(exc.current_value ?? "")}
+                                    isSaved={savedFields.has(exc.field)}
+                                    onChange={(v) => handleEditChange(exc.field, v)} onSave={() => handleSaveField(exc.field)}
+                                    onEscalate={handleEscalate}
                                     onIgnoreClick={() => handleIgnoreClick(exc)}
                                     onConfirmIgnore={handleConfirmIgnore} onCancelIgnore={handleCancelIgnore}
                                 />
@@ -491,18 +483,20 @@ export default function ExceptionManager({
             {activeReview.length > 0 && (
                 <div className="rounded-xl border overflow-hidden" style={{ background: "#fff", borderColor: "rgba(139,92,246,0.2)" }}>
                     <div className="flex items-center gap-2 px-4 py-3 border-b" style={{ background: "rgba(139,92,246,0.04)", borderColor: "rgba(139,92,246,0.15)" }}>
-                        <span className="text-purple-600 font-bold text-[10px] uppercase tracking-widest">✏️ Manual Review</span>
+                        <span className="text-purple-600 font-bold text-[10px] uppercase tracking-widest">✏️ Manual Review Required</span>
                         <span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{ background: "rgba(139,92,246,0.08)", color: "#7c3aed", border: "1px solid rgba(139,92,246,0.18)" }}>
                             {activeReview.length}
                         </span>
-                        <span className="text-[10px] hidden sm:inline" style={{ color: "#8e8e99" }}>— Human verification required</span>
+                        <span className="text-[10px] hidden sm:inline" style={{ color: "#8e8e99" }}>— Human verification strongly required (No AI Fixes Found)</span>
                     </div>
                     <div className="p-3">
                         {activeReview.map((exc, i) => (
-                            <ReviewRow key={i} exc={exc}
+                            <ExceptionRow key={i} exc={exc}
+                                hasAI={false}
                                 editValue={editedValues[exc.field] ?? String(exc.current_value ?? "")}
                                 isSaved={savedFields.has(exc.field)} isPendingIgnore={pendingIgnoreId === getExcId(exc)}
                                 onChange={(v) => handleEditChange(exc.field, v)} onSave={() => handleSaveField(exc.field)}
+                                onEscalate={handleEscalate}
                                 onIgnoreClick={() => handleIgnoreClick(exc)}
                                 onConfirmIgnore={handleConfirmIgnore} onCancelIgnore={handleCancelIgnore}
                             />
