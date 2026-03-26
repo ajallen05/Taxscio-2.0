@@ -57,11 +57,42 @@ def _ledger_get_session():
     return None
 
 from backend.ledger.routes import ledger_bp
-from flask import Flask
+from flask import Flask, request as flask_request
 from fastapi.middleware.wsgi import WSGIMiddleware
 
 flask_app = Flask(__name__)
 flask_app.register_blueprint(ledger_bp)
+
+# Handle CORS preflight (OPTIONS) — Flask routes only declare POST/GET,
+# so without this the browser gets 405 and blocks the real request.
+@flask_app.before_request
+def _flask_cors_preflight():
+    if flask_request.method == "OPTIONS":
+        from flask import make_response
+        resp = make_response()
+        resp.status_code = 204
+        return resp
+
+@flask_app.after_request
+def _flask_cors(response):
+    origin = flask_request.headers.get("Origin", "")
+    _flask_allowed = {
+        "http://localhost", "http://localhost:80",
+        "http://localhost:5173", "http://127.0.0.1:5173",
+        "http://localhost:3000", "http://127.0.0.1:3000",
+        "http://localhost:3001", "http://127.0.0.1:3001",
+        "http://localhost:3002", "http://127.0.0.1:3002",
+        "null",
+    }
+    _ec2 = os.environ.get("EC2_ORIGIN")
+    if _ec2:
+        _flask_allowed.add(_ec2)
+    if origin in _flask_allowed:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Request-ID"
+    return response
 
 _extraction_engine = ExtractionEngineAdapter()
 _data_integrity = DataIntegrityEngineAdapter()

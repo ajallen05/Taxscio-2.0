@@ -2217,6 +2217,11 @@ function validateFieldInput(field, value) {
         if (yr < 1990 || yr > 2035) {
             return `Tax year ${yr} is outside the valid range (1990–2035)`;
         }
+        const currentYear = new Date().getFullYear();
+        if (yr < currentYear - 1) {
+            return `Tax year ${yr} is more than 1 year prior to ${currentYear}. ` +
+                   `If this is an amended return, use Escalate instead.`;
+        }
         return null;
     }
 
@@ -2302,10 +2307,8 @@ function validateFieldInput(field, value) {
 function LiveExcCard({ exc, formType, filename, apiUrl, documentId: documentIdProp, validationError, isSubmitting, onSubmit, onEscalate }) {
     const [overrideMode, setOverrideMode] = useState(false);
     const [overrideVal, setOverrideVal] = useState('');
-    const [escalationLoading, setEscalationLoading] = useState(false);
     const [error, setError] = useState(null);
     const [escalated, setEscalated] = useState(false);
-    const [escalationMeta, setEscalationMeta] = useState(null);
     const baseApiUrl = (apiUrl || 'http://localhost:8000').replace(/\/$/, '');
 
     // Reset input state whenever the exception changes (new card or prop update)
@@ -2326,11 +2329,21 @@ function LiveExcCard({ exc, formType, filename, apiUrl, documentId: documentIdPr
     const code = (exc.code || exc.exception_id || '');
     const getType = () => {
         const c = code.toUpperCase();
-        if (c.includes('MISMATCH') || c.includes('VARIANCE') || c.includes('GT') || c.includes('LT') || c.includes('NEQ')) return ['⚡', 'Data Mismatch'];
-        if (c.includes('MISSING') || c.includes('ZERO') || c.includes('BLANK') || c.includes('NULL')) return ['📄', 'Missing Field'];
-        if (c.includes('CALC') || c.includes('MATH') || c.includes('SUM')) return ['🔢', 'Calculation Variance'];
-        if (c.includes('IRS') || c.includes('FLAG') || c.includes('RULE') || c.includes('SALT')) return ['🏛', 'IRS Rule Flag'];
-        if (c.includes('YEAR') || c.includes('DATE') || c.includes('PRIOR')) return ['📋', 'Prior Year Conflict'];
+        if (c.startsWith('NUM_')) return ['🔢', 'Calculation Variance'];
+        if (c.startsWith('ID_')) return ['🪪', 'Identity Exception'];
+        if (c.startsWith('FLD_')) return ['📄', 'Missing Field'];
+        if (c.startsWith('OCR_')) return ['🖨️', 'OCR / Format Issue'];
+        if (c.startsWith('LLM_') || c.startsWith('LLMD_')) return ['🤖', 'LLM Exception'];
+        if (c.startsWith('ENG_')) return ['📋', 'Engagement Issue'];
+        if (c.startsWith('CY_')) return ['📅', 'Prior Year Conflict'];
+        if (c.startsWith('XDOC_')) return ['🔗', 'Cross-Document'];
+        if (c.startsWith('SEC_')) return ['🔒', 'Security Flag'];
+        if (c.startsWith('WF_') || c.startsWith('LED_')) return ['⚙️', 'Workflow State'];
+        if (c.startsWith('EMAIL_')) return ['📧', 'Email Source'];
+        if (c.startsWith('MT_')) return ['🏢', 'Multi-Tenant'];
+        if (c.startsWith('DB_')) return ['🗄️', 'Data Schema'];
+        if (c.startsWith('STR_')) return ['🏗️', 'Structural'];
+        if (c.startsWith('CTX_')) return ['⚖️', 'Tax Logic'];
         return ['⚠️', 'Exception'];
     };
     const [typeIcon, typeLabel] = getType();
@@ -2363,38 +2376,29 @@ function LiveExcCard({ exc, formType, filename, apiUrl, documentId: documentIdPr
     };
 
     const handleEscalate = async () => {
-        setEscalationLoading(true);
-        setError(null);
+        // Remove card immediately — don't wait for API
+        if (onEscalate) onEscalate(exc.code, exc.field);
+
+        // Fire API in background for ledger record
         try {
-            const r = await fetch(`${baseApiUrl}/ledger/escalate-exception`, {
+            const baseUrl = (apiUrl || 'http://localhost:8000').replace(/\/$/, '');
+            await fetch(`${baseUrl}/ledger/escalate-exception`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     document_id: documentIdProp || null,
-                    client_name: clientLabel,
+                    client_name: filename,
                     document_type: formType,
                     exception_code: exc.code,
                     exception_field: exc.field,
-                    severity: exc.severity || rawSev || sevDisplay,
+                    severity: exc.severity || 'WARNING',
                     description: exc.description || exc.message || null,
                     filename,
                 }),
             });
-            const data = await r.json().catch(() => ({}));
-            if (!r.ok) {
-                setError(data.error || data.message || `Escalation failed (${r.status})`);
-                return;
-            }
-            setEscalationMeta({
-                id: data.escalation_id,
-                ledgerLinked: !!data.ledger_linked,
-            });
-            // Remove this exception from the queue via onEscalate
-            if (onEscalate) onEscalate(exc.field);
         } catch (e) {
-            setError(e?.message || 'Network error');
-        } finally {
-            setEscalationLoading(false);
+            // Silently ignore — card is already removed
+            console.warn('[Escalate] API call failed silently:', e?.message);
         }
     };
 
@@ -2449,26 +2453,6 @@ function LiveExcCard({ exc, formType, filename, apiUrl, documentId: documentIdPr
                 <div style={{ fontSize: 11, color: 'var(--red)', marginBottom: 8 }}>{error}</div>
             )}
 
-            {escalated && escalationMeta && (
-                <div
-                    style={{
-                        fontSize: 12,
-                        color: 'var(--text-secondary)',
-                        marginBottom: 10,
-                        padding: '10px 12px',
-                        background: 'rgba(99, 102, 241, 0.08)',
-                        border: '1px solid var(--border)',
-                        borderRadius: 'var(--radius)',
-                    }}
-                >
-                    <strong style={{ color: 'var(--text-primary)' }}>Escalated.</strong>{' '}
-                    Recorded on the server (escalation #{escalationMeta.id}).
-                    {escalationMeta.ledgerLinked
-                        ? ' Linked to your filing pipeline ledger.'
-                        : ' No matching ledger row for this client/form — escalation is still stored.'}
-                </div>
-            )}
-
             {validationError && (
                 <div style={{ fontSize: 11, color: 'var(--red)', marginBottom: 6 }}>✗ {validationError}</div>
             )}
@@ -2499,9 +2483,9 @@ function LiveExcCard({ exc, formType, filename, apiUrl, documentId: documentIdPr
                                 type="button"
                                 className="btn btn-danger"
                                 onClick={handleEscalate}
-                                disabled={escalationLoading || escalated}
+                                disabled={escalated}
                             >
-                                {escalationLoading ? 'Sending…' : escalated ? 'Escalated' : 'Escalate'}
+                                Escalate
                             </button>
                         </div>
                     );
@@ -2553,7 +2537,7 @@ function LiveExcCard({ exc, formType, filename, apiUrl, documentId: documentIdPr
                                     type="button"
                                     className="btn btn-danger"
                                     onClick={handleEscalate}
-                                    disabled={escalationLoading || escalated}
+                                    disabled={escalated}
                                 >
                                     Escalate
                                 </button>
@@ -2600,7 +2584,7 @@ function LiveExcCard({ exc, formType, filename, apiUrl, documentId: documentIdPr
                                 type="button"
                                 className="btn btn-danger"
                                 onClick={handleEscalate}
-                                disabled={escalationLoading || escalated}
+                                disabled={escalated}
                             >
                                 Escalate
                             </button>
@@ -2925,12 +2909,14 @@ function PageExceptions({ files, results, apiUrl, setResults }) {
                                 onSubmit={(field, value) =>
                                     handleCardSubmit(card.filename, field, value, card.formType)
                                 }
-                                onEscalate={(field) => {
+                                onEscalate={(code, field) => {
                                     setLiveExceptions(prev => ({
                                         ...prev,
-                                        [card.filename]: (prev[card.filename] || []).filter(e =>
-                                            (e.field || '') !== field
-                                        )
+                                        [card.filename]: (prev[card.filename] || []).filter(e => {
+                                            const eKey = `${e.code || ''}:${e.field || ''}`;
+                                            const target = `${code || ''}:${field || ''}`;
+                                            return eKey !== target;
+                                        })
                                     }));
                                 }}
                             />
