@@ -42,7 +42,7 @@ Then open your browser to `http://localhost:5173` and navigate to **Filing Pipel
 - **Python 3.8+**
 - **PostgreSQL 12+** running locally
 - **Node.js 16+** and npm
-- **Database Credentials:** Default is `postgresql://postgres:0406@localhost:5432/`
+- **Database Credentials:** Default is `postgresql://postgres:password@localhost:5432/`
 
 ### Create Databases
 
