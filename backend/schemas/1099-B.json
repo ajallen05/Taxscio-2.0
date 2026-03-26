@@ -1,0 +1,68 @@
+{
+  "form": "1099-B",
+  "year": null,
+  "status": {
+    "void": false,
+    "corrected": false
+  },
+  "payer_information": {
+    "payer_name": null,
+    "payer_address": null,
+    "payer_city": null,
+    "payer_state": null,
+    "payer_zip": null,
+    "payer_phone": null,
+    "payer_tin": null
+  },
+  "recipient_information": {
+    "recipient_tin": null,
+    "recipient_name": null,
+    "recipient_address": null,
+    "recipient_city": null,
+    "recipient_state": null,
+    "recipient_zip": null
+  },
+  "transaction_details": {
+    "box_1a_description_of_property": null,
+    "box_1b_date_acquired": null,
+    "box_1c_date_sold_or_disposed": null,
+    "box_1d_proceeds": null,
+    "box_1e_cost_or_other_basis": null,
+    "box_1f_accrued_market_discount": null,
+    "box_1g_wash_sale_loss_disallowed": null
+  },
+  "gain_loss_information": {
+    "box_2_short_term_gain_or_loss": false,
+    "box_2_long_term_gain_or_loss": false,
+    "box_2_ordinary": false
+  },
+  "proceeds_type": {
+    "box_3_collectibles": false,
+    "box_3_qof": false
+  },
+  "tax_information": {
+    "box_4_federal_income_tax_withheld": null,
+    "box_5_noncovered_security": false,
+    "box_6_reported_to_irs_gross_proceeds": false,
+    "box_6_reported_to_irs_net_proceeds": false,
+    "box_7_loss_not_allowed": false
+  },
+  "contracts_information": {
+    "box_8_profit_or_loss_realized": null,
+    "box_9_unrealized_profit_or_loss_current_year": null,
+    "box_10_unrealized_profit_or_loss_prior_year": null,
+    "box_11_aggregate_profit_or_loss": null
+  },
+  "additional_information": {
+    "box_12_basis_reported_to_irs": false,
+    "box_13_bartering": null,
+    "account_number": null,
+    "cusip_number": null,
+    "fatca_filing_requirement": false
+  },
+  "state_information": {
+    "box_14_state_name": null,
+    "box_15_state_identification_number": null,
+    "box_16_state_tax_withheld": null
+  }
+}

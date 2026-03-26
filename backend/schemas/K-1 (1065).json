@@ -1,0 +1,115 @@
+{
+  "form": "Schedule K-1 (Form 1065)",
+  "year": 2025,
+  "header": {
+    "final_k1": false,
+    "amended_k1": false,
+    "tax_year_beginning": null,
+    "tax_year_ending": null
+  },
+  "partnership_information": {
+    "A_partnership_tin": null,
+    "B_partnership_name": null,
+    "B_partnership_address": null,
+    "B_partnership_city": null,
+    "B_partnership_state": null,
+    "B_partnership_zip": null,
+    "C_irs_center_where_filed": null,
+    "D_publicly_traded_partnership": false
+  },
+  "partner_information": {
+    "E_partner_ssn_or_tin": null,
+    "F_partner_name": null,
+    "F_partner_address": null,
+    "F_partner_city": null,
+    "F_partner_state": null,
+    "F_partner_zip": null
+  },
+  "partner_type": {
+    "G_general_partner_or_llc_member_manager": false,
+    "G_limited_partner_or_llc_member": false,
+    "H1_domestic_partner": false,
+    "H1_foreign_partner": false,
+    "H2_partner_is_disregarded_entity": false,
+    "H2_disregarded_entity_tin": null,
+    "H2_disregarded_entity_name": null
+  },
+  "entity_information": {
+    "I1_entity_type": null,
+    "I2_retirement_plan_partner": false
+  },
+  "partner_share_percentages": {
+    "profit_beginning": null,
+    "profit_ending": null,
+    "loss_beginning": null,
+    "loss_ending": null,
+    "capital_beginning": null,
+    "capital_ending": null
+  },
+  "liability_change_reason": {
+    "sale_or_exchange_interest": false
+  },
+  "partner_share_of_liabilities": {
+    "nonrecourse_beginning": null,
+    "nonrecourse_ending": null,
+    "qualified_nonrecourse_financing_beginning": null,
+    "qualified_nonrecourse_financing_ending": null,
+    "recourse_beginning": null,
+    "recourse_ending": null
+  },
+  "lower_tier_liabilities": {
+    "includes_lower_tier_liabilities": false,
+    "liabilities_subject_to_guarantee": false
+  },
+  "partner_capital_account_analysis": {
+    "beginning_capital_account": null,
+    "capital_contributed_during_year": null,
+    "current_year_net_income_loss": null,
+    "other_increase_decrease": null,
+    "withdrawals_and_distributions": null,
+    "ending_capital_account": null
+  },
+  "built_in_gain_loss": {
+    "contributed_property_with_gain_loss": false
+  },
+  "net_unrecognized_section_704c": {
+    "beginning": null,
+    "ending": null
+  },
+  "income_deductions_credits": {
+    "1_ordinary_business_income_loss": null,
+    "2_net_rental_real_estate_income_loss": null,
+    "3_other_net_rental_income_loss": null,
+    "4a_guaranteed_payments_services": null,
+    "4b_guaranteed_payments_capital": null,
+    "4c_total_guaranteed_payments": null,
+    "5_interest_income": null,
+    "6a_ordinary_dividends": null,
+    "6b_qualified_dividends": null,
+    "6c_dividend_equivalents": null,
+    "7_royalties": null,
+    "8_net_short_term_capital_gain_loss": null,
+    "9a_net_long_term_capital_gain_loss": null,
+    "9b_collectibles_28_percent_gain_loss": null,
+    "9c_unrecaptured_section_1250_gain": null,
+    "10_net_section_1231_gain_loss": null,
+    "11_other_income_loss": null,
+    "12_section_179_deduction": null,
+    "13_other_deductions": null,
+    "14_self_employment_earnings_loss": null,
+    "15_credits": null,
+    "16_schedule_k3_attached": false,
+    "17_alternative_minimum_tax_items": null,
+    "18_tax_exempt_income_and_nondeductible_expenses": null,
+    "19_distributions": null,
+    "20_other_information": null,
+    "21_foreign_taxes_paid_or_accrued": null
+  },
+  "additional_flags": {
+    "22_more_than_one_activity_at_risk": false,
+    "23_more_than_one_activity_passive": false
+  },
+  "notes": {
+    "additional_statement_attached": false
+  }
+}
