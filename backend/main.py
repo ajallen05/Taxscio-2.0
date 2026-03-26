@@ -391,6 +391,7 @@ class ValidateBody(BaseModel):
     model_config = {"extra": "allow"}
     form_type: str | None = None
     data: Any = None
+    fixes: list[Any] = []
     pdf_type: str = "digital"
     context: dict[str, Any] = {}
     human_verified_fields: list[str] = []
@@ -713,9 +714,15 @@ def validate_route(req: Request, body: ValidateBody):
                 status_code=400,
             )
 
+        # Apply fixes before validating so the engine sees CPA's submitted values
+        # mapped to the correct extracted-data keys (e.g. box_7_distribution_code)
+        data_to_validate = body.data
+        if body.fixes:
+            data_to_validate = _data_integrity._patch_nested(body.data, body.fixes)
+
         result = _data_integrity.validate(
             form_type=form_type,
-            extracted_fields=body.data,
+            extracted_fields=data_to_validate,
             context=body.context,
             pdf_type=body.pdf_type,
             human_verified_fields=body.human_verified_fields,

@@ -2220,6 +2220,21 @@ function validateFieldInput(field, value) {
         return null;
     }
 
+    // ── Distribution / box codes ─────────────────────────────────────
+    if (f.endsWith('_code') && (f.includes('distribution') || f.includes('box_7'))) {
+        // IRS 1099-R Box 7 valid distribution codes
+        const VALID_DIST_CODES = new Set([
+            '1','2','3','4','5','6','7','8','9',
+            'A','B','C','D','E','F','G','H','J',
+            'K','L','M','N','P','Q','R','S','T','U','W'
+        ]);
+        if (!VALID_DIST_CODES.has(v.toUpperCase())) {
+            return `'${v}' is not a valid IRS distribution code. ` +
+                   `Valid codes: 1-9, A-H, J-N, P-W (excluding I, O, V, X, Y, Z)`;
+        }
+        return null;
+    }
+
     // ── Currency / monetary amounts ──────────────────────────────────
     const CURRENCY_FIELDS = [
         'wages', 'income', 'amount', 'payment', 'compensation',
@@ -2228,7 +2243,14 @@ function validateFieldInput(field, value) {
         'gross', 'net', 'adjusted', 'deduction', 'credit',
         'contribution', 'benefit', 'premium', 'cost', 'basis',
     ];
-    const isCurrency = CURRENCY_FIELDS.some(kw => f.includes(kw));
+    const NON_CURRENCY_SUFFIXES = [
+        '_code', '_type', '_id', '_number', '_status',
+        '_indicator', '_flag', '_method', '_category',
+        '_date', '_time', '_datetime', '_at',
+    ];
+    const isCurrency = CURRENCY_FIELDS.some(kw => f.includes(kw))
+        && !NON_CURRENCY_SUFFIXES.some(suffix => f.endsWith(suffix))
+        && !f.startsWith('date_of_');
     if (isCurrency) {
         const cleaned = v.replace(/[$,\s]/g, '');
         const num = parseFloat(cleaned);
@@ -2283,25 +2305,21 @@ function validateFieldInput(field, value) {
 
 // LIVE EXCEPTION CARD — matches Image 1 card grid layout
 // ═══════════════════════════════════════════════════════════════════════════
-function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}, documentId: documentIdProp }) {
+function LiveExcCard({ exc, formType, filename, apiUrl, documentId: documentIdProp, validationError, isSubmitting, onSubmit, onEscalate }) {
     const [overrideMode, setOverrideMode] = useState(false);
     const [overrideVal, setOverrideVal] = useState('');
-    const [loading, setLoading] = useState(false);
+    const [escalationLoading, setEscalationLoading] = useState(false);
     const [error, setError] = useState(null);
-    const [validationError, setValidationError] = useState(null);
     const [escalated, setEscalated] = useState(false);
     const [escalationMeta, setEscalationMeta] = useState(null);
-    const [hidden, setHidden] = useState(false);
     const baseApiUrl = (apiUrl || 'http://localhost:8000').replace(/\/$/, '');
 
     // Reset input state whenever the exception changes (new card or prop update)
     useEffect(() => {
         setOverrideVal('');
-        setValidationError(null);
         setError(null);
         setOverrideMode(false);
         setEscalated(false);
-        setHidden(false);
     }, [exc.field, exc.code]);
 
     // Normalise severity to high / medium / low
@@ -2329,156 +2347,29 @@ function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}
         : null;
 
     // Client display prioritize name over filename
-    const clientLabel = docData.client_name || filename.replace(/\.[^/.]+$/, '');
+    const clientLabel = filename.replace(/\.[^/.]+$/, '');
 
-    // The unique key for this exception — used by parent to remove it from results
-    const excKey = `${exc.code || ''}:${exc.field || ''}`;
-
-    const callAPI = async (fixValue) => {
-        setLoading(true);
-        setError(null);
-        setValidationError(null);
-
-        // ── Guard: insufficient form data ────────────────────────────────
-        // If docData has fewer than 3 keys, the engine cannot validate reliably.
-        // Skip the API call — client-side validation already ran and passed,
-        // so accept the value locally and close the card.
-        const docDataKeys = Object.keys(docData || {});
-        if (docDataKeys.length < 3) {
-            console.warn(
-                `[LiveExcCard] docData has ${docDataKeys.length} keys for field "${exc.field}".`,
-                'Engine validation skipped — accepting client-side validated value.'
-            );
-            if (onResolved) onResolved(excKey, null);
-            setTimeout(() => setHidden(true), 0);
-            setLoading(false);
-            return;
-        }
-
-        try {
-            // Merge the submitted fix into docData so the engine validates
-            // the UPDATED state, not the original null state.
-            const patchedData = { ...docData };
-            if (exc.field && fixValue !== null && fixValue !== undefined) {
-                patchedData[exc.field] = fixValue;
-                Object.keys(patchedData).forEach(k => {
-                    if (k.toLowerCase().endsWith(`_${exc.field}`) ||
-                        k.toLowerCase().endsWith(`.${exc.field}`)) {
-                        patchedData[k] = fixValue;
-                    }
-                });
-            }
-
-            const body = {
-                form_type: formType,
-                data: patchedData,
-                fixes: exc.field ? [{ field: exc.field, new_value: fixValue }] : [],
-                pdf_type: 'digital',
-                human_verified_fields: exc.field ? [exc.field] : [],
-                context: { filename },
-            };
-
-            const r = await fetch(`${baseApiUrl}/apply-fixes`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-            });
-
-            const data = await r.json().catch(() => ({}));
-
-            if (!r.ok) {
-                setError(data?.error || data?.message || `Save failed (${r.status})`);
-                return;
-            }
-
-            // ── EXCEPTION FLAGGING LOOP ──────────────────────────────────────
-            // Contract:
-            //   - Field still failing → show inline error on THIS card, stop.
-            //     The exception must NOT appear as a new card — it belongs here.
-            //   - Field passing → strip this field from response, hide card,
-            //     propagate so other field exceptions can surface as new cards.
-
-            const allReturnedExceptions = [
-                ...(data.exceptions || []),
-                ...(data.fixable_exceptions || []),
-                ...(data.review_exceptions || []),
-            ];
-
-            const thisFieldLower = (exc.field || '').toLowerCase();
-
-            const fieldStillFailing = exc.field
-                ? allReturnedExceptions.some(e =>
-                    (e.field || '').toLowerCase() === thisFieldLower
-                  )
-                : false;
-
-            if (fieldStillFailing) {
-                const failingExc = allReturnedExceptions.find(e =>
-                    (e.field || '').toLowerCase() === thisFieldLower
-                );
-                const reason = failingExc?.description
-                    || failingExc?.message
-                    || failingExc?.edit_hint
-                    || failingExc?.code
-                    || 'Value did not pass IRS validation rules';
-                setValidationError(`✗ ${reason}`);
-                setLoading(false);
-                return;  // STOP. Card stays open. Nothing propagates.
-            }
-
-            // Field is clean. Strip this field from the response before
-            // propagating — prevents it reappearing as a new exception card.
-            const stripThisField = (arr) =>
-                (arr || []).filter(e =>
-                    (e.field || '').toLowerCase() !== thisFieldLower
-                );
-
-            const sanitizedData = {
-                ...data,
-                exceptions:         stripThisField(data.exceptions),
-                fixable_exceptions: stripThisField(data.fixable_exceptions),
-                review_exceptions:  stripThisField(data.review_exceptions),
-            };
-
-            // Update parent state first, then hide this card.
-            // This prevents a double-render where the card briefly reappears
-            // because the parent re-rendered before setHidden took effect.
-            if (onResolved) onResolved(excKey, sanitizedData);
-            setTimeout(() => setHidden(true), 0);
-
-        } catch (e) {
-            setError(e?.message || 'Network error');
-        } finally {
-            setLoading(false);
-        }
+    const handleSubmit = (value) => {
+        const val = String(value || '').trim();
+        if (!val) return;
+        onSubmit(exc.field, val);
     };
 
     const handleAccept = () => {
-        const fixVal = exc.proposed_value ?? exc.auto_fix_value ?? undefined;
+        const fixVal = exc.proposed_value ?? exc.auto_fix_value;
         if (fixVal === undefined || fixVal === null || fixVal === '') {
             setError('No AI-proposed value available — enter a value manually.');
             return;
         }
-        callAPI(fixVal);
+        handleSubmit(String(fixVal));
     };
 
     const handleOverrideConfirm = () => {
-        const val = overrideVal.trim();
-        if (!val) return;
-
-        // Client-side format validation BEFORE the API call
-        const formatError = validateFieldInput(exc.field, val);
-        if (formatError) {
-            setValidationError(formatError);
-            return;
-        }
-
-        setValidationError(null);
-        callAPI(val);
+        handleSubmit(overrideVal);
     };
 
     const handleEscalate = async () => {
-        setLoading(true);
+        setEscalationLoading(true);
         setError(null);
         try {
             const r = await fetch(`${baseApiUrl}/ledger/escalate-exception`, {
@@ -2504,17 +2395,12 @@ function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}
                 id: data.escalation_id,
                 ledgerLinked: !!data.ledger_linked,
             });
-            // Treat escalation as "ignore and remove from queue"
-            setHidden(true);
-            if (onResolved) {
-                onResolved(excKey, null);
-                return;
-            }
-            setEscalated(true);
+            // Remove this exception from the queue via onEscalate
+            if (onEscalate) onEscalate(exc.field);
         } catch (e) {
             setError(e?.message || 'Network error');
         } finally {
-            setLoading(false);
+            setEscalationLoading(false);
         }
     };
 
@@ -2523,8 +2409,6 @@ function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}
         : exc.document_confidence !== undefined ? Math.round(exc.document_confidence * 100)
             : null;
     const confCls = confPct === null ? '' : confPct >= 90 ? 'high' : confPct >= 70 ? 'med' : 'low';
-
-    if (hidden) return null;
 
     return (
         <div className="exception-card">
@@ -2591,6 +2475,10 @@ function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}
                 </div>
             )}
 
+            {validationError && (
+                <div style={{ fontSize: 11, color: 'var(--red)', marginBottom: 6 }}>✗ {validationError}</div>
+            )}
+
             {(() => {
                 const excType = classifyException(exc);
 
@@ -2606,21 +2494,23 @@ function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}
                                 type="button"
                                 className="btn btn-success"
                                 onClick={handleAccept}
-                                disabled={loading || escalated}
+                                disabled={isSubmitting || escalated}
                                 title={proposedDisplay
                                     ? `AI fix: set ${exc.field} → ${proposedDisplay}`
                                     : 'Apply AI suggestion'}
                             >
-                                {loading ? 'Applying…' : `Accept AI Suggestion${proposedDisplay ? ` (→ ${proposedDisplay})` : ''}`}
+                                {isSubmitting ? 'Applying…' : `Accept AI Suggestion${proposedDisplay ? ` (→ ${proposedDisplay})` : ''}`}
                             </button>
-                            <button
-                                type="button"
-                                className="btn btn-danger"
-                                onClick={handleEscalate}
-                                disabled={loading || escalated}
-                            >
-                                {loading ? 'Sending…' : escalated ? 'Escalated' : 'Escalate'}
-                            </button>
+                            {sevDisplay === 'LOW' && (
+                                <button
+                                    type="button"
+                                    className="btn btn-danger"
+                                    onClick={handleEscalate}
+                                    disabled={escalationLoading || escalated}
+                                >
+                                    {escalationLoading ? 'Sending…' : escalated ? 'Escalated' : 'Escalate'}
+                                </button>
+                            )}
                         </div>
                     );
                 }
@@ -2656,31 +2546,28 @@ function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}
                                     }}
                                     placeholder={hint}
                                     value={overrideVal}
-                                    onChange={e => { setOverrideVal(e.target.value); setValidationError(null); }}
+                                    onChange={e => setOverrideVal(e.target.value)}
                                     onKeyDown={e => e.key === 'Enter' && overrideVal.trim() && handleOverrideConfirm()}
                                     autoFocus
                                 />
                                 <button
                                     className="btn btn-success"
                                     onClick={handleOverrideConfirm}
-                                    disabled={loading || !overrideVal.trim()}
+                                    disabled={isSubmitting || !overrideVal.trim()}
                                 >
-                                    {loading ? 'Validating…' : 'Submit'}
+                                    {isSubmitting ? 'Validating…' : 'Submit'}
                                 </button>
-                                <button
-                                    type="button"
-                                    className="btn btn-danger"
-                                    onClick={handleEscalate}
-                                    disabled={loading || escalated}
-                                >
-                                    Escalate
-                                </button>
+                                {sevDisplay === 'LOW' && (
+                                    <button
+                                        type="button"
+                                        className="btn btn-danger"
+                                        onClick={handleEscalate}
+                                        disabled={escalationLoading || escalated}
+                                    >
+                                        Escalate
+                                    </button>
+                                )}
                             </div>
-                            {validationError && (
-                                <div style={{ fontSize: 11, color: 'var(--red)', marginTop: 2 }}>
-                                    ✗ {validationError}
-                                </div>
-                            )}
                         </div>
                     );
                 }
@@ -2701,27 +2588,34 @@ function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}
                             }}
                             placeholder={`Enter corrected value for ${fieldLabel || 'this field'}…`}
                             value={overrideVal}
-                            onChange={e => { setOverrideVal(e.target.value); setValidationError(null); }}
+                            onChange={e => setOverrideVal(e.target.value)}
                             onKeyDown={e => e.key === 'Enter' && handleOverrideConfirm()}
                             autoFocus
                         />
-                        {validationError && (
-                            <div style={{ fontSize: 11, color: 'var(--red)' }}>✗ {validationError}</div>
-                        )}
                         <div style={{ display: 'flex', gap: 8 }}>
                             <button
                                 className="btn btn-success"
                                 onClick={handleOverrideConfirm}
-                                disabled={loading || !overrideVal.trim()}
+                                disabled={isSubmitting || !overrideVal.trim()}
                             >
-                                {loading ? 'Validating…' : 'Confirm Override'}
+                                {isSubmitting ? 'Validating…' : 'Confirm Override'}
                             </button>
                             <button
                                 className="btn btn-secondary"
-                                onClick={() => { setOverrideMode(false); setOverrideVal(''); setValidationError(null); }}
+                                onClick={() => { setOverrideMode(false); setOverrideVal(''); }}
                             >
                                 Cancel
                             </button>
+                            {sevDisplay === 'LOW' && (
+                                <button
+                                    type="button"
+                                    className="btn btn-danger"
+                                    onClick={handleEscalate}
+                                    disabled={escalationLoading || escalated}
+                                >
+                                    Escalate
+                                </button>
+                            )}
                         </div>
                     </div>
                 );
@@ -2734,44 +2628,231 @@ function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}
 // PAGE: EXCEPTIONS  — card grid layout (matches Image 1)
 // ═══════════════════════════════════════════════════════════════════════════
 function PageExceptions({ files, results, apiUrl, setResults }) {
-    const [filterSev, setFilterSev] = useState('All Types');
     const [filterType, setFilterType] = useState('All Types');
 
-    // Flatten all exceptions from all completed files into a single list
-    const allCards = [];
-    files.filter(f => f.status === 'completed').forEach(f => {
-        const r = results[f.file.name] || {};
-        const formType = f.form_type || r.form_type || '—';
-        const filename = f.file.name;
-
-        const push = (exc) => allCards.push({ exc, formType, filename, result: r });
-
-        // Collect from all three arrays — deduplicate by code+field, tag source
-        const seen = new Set();
-        const dedup = (arr, source) => (arr || []).forEach(exc => {
-            const key = `${exc.code || ''}:${exc.field || ''}`;
-            if (!seen.has(key)) {
-                seen.add(key);
-                push({ ...exc, _source: source });
+    // patchedData[filename] = full form data dict for that file, updated after every /apply-fixes
+    const [patchedData, setPatchedData] = useState(() => {
+        const initial = {};
+        files.filter(f => f.status === 'completed').forEach(f => {
+            const r = results[f.file.name] || {};
+            const candidate =
+                r.extracted_fields ||
+                r.data ||
+                r.raw_normalized_json ||
+                r.formatted_json ||
+                {};
+            const isNested = Object.values(candidate).some(
+                v => v !== null && typeof v === 'object' && !Array.isArray(v)
+            );
+            if (isNested) {
+                const flat = {};
+                for (const [k, v] of Object.entries(candidate)) {
+                    if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+                        Object.assign(flat, v);
+                    } else {
+                        flat[k] = v;
+                    }
+                }
+                initial[f.file.name] = flat;
+            } else {
+                initial[f.file.name] = { ...candidate };
             }
         });
-
-        // CRITICAL ORDER: classified arrays first so their _source tag wins.
-        // r.exceptions is the raw full list — only add exceptions not already
-        // captured by the classified arrays.
-        dedup(r.fixable_exceptions, 'fixable');
-        dedup(r.review_exceptions,  'review');
-        dedup(r.exceptions,         'exceptions');
+        return initial;
     });
 
-    // Stats
+    // liveExceptions[filename] = current exception list, replaced wholesale after every /apply-fixes
+    const [liveExceptions, setLiveExceptions] = useState(() => {
+        const initial = {};
+        files.filter(f => f.status === 'completed').forEach(f => {
+            const r = results[f.file.name] || {};
+            const seen = new Set();
+            const deduped = [];
+            const dedup = (arr, source) => (arr || []).forEach(exc => {
+                const key = `${exc.code || ''}:${exc.field || ''}`;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    deduped.push({ ...exc, _source: source });
+                }
+            });
+            dedup(r.fixable_exceptions, 'fixable');
+            dedup(r.review_exceptions,  'review');
+            dedup(r.exceptions,         'exceptions');
+            initial[f.file.name] = deduped;
+        });
+        return initial;
+    });
+
+    // submitting[filename] = true while /apply-fixes is in flight for that file
+    const [submitting, setSubmitting] = useState({});
+
+    // fieldErrors[filename][field] = inline error string for that card
+    const [fieldErrors, setFieldErrors] = useState({});
+
+    const handleCardSubmit = async (filename, field, value, formType) => {
+        // Client-side format validation before any network call
+        const formatError = validateFieldInput(field, value);
+        if (formatError) {
+            setFieldErrors(prev => ({
+                ...prev,
+                [filename]: { ...(prev[filename] || {}), [field]: formatError }
+            }));
+            return;
+        }
+
+        setSubmitting(prev => ({ ...prev, [filename]: true }));
+        setFieldErrors(prev => ({
+            ...prev,
+            [filename]: { ...(prev[filename] || {}), [field]: null }
+        }));
+
+        try {
+            const currentData = patchedData[filename] || {};
+            const newPatchedData = { ...currentData, [field]: value };
+            const baseUrl = (apiUrl || 'http://localhost:8000').replace(/\/$/, '');
+
+            // Step 1: validate — pass fixes so the backend applies the CPA's value
+            // to the correct extracted-data key (e.g. box_7_distribution_code) via
+            // _patch_nested before running the engine. No frontend key-guessing needed.
+            const vRes = await fetch(`${baseUrl}/validate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    form_type: formType,
+                    data: newPatchedData,
+                    fixes: [{ field, new_value: value }],
+                    pdf_type: 'digital',
+                }),
+            });
+            if (vRes.ok) {
+                const vData = await vRes.json().catch(() => ({}));
+                const allVExc = [
+                    ...(vData.fixable_exceptions || []),
+                    ...(vData.review_exceptions  || []),
+                    ...(vData.exceptions         || []),
+                ];
+                const fLow = (field || '').toLowerCase();
+                const failing = allVExc.find(e => (e.field || '').toLowerCase() === fLow);
+                if (failing) {
+                    const reason = failing.description || failing.edit_hint || failing.code || 'Value did not pass IRS validation rules';
+                    setFieldErrors(prev => ({ ...prev, [filename]: { ...(prev[filename] || {}), [field]: reason } }));
+                    setSubmitting(prev => ({ ...prev, [filename]: false }));
+                    return;
+                }
+            }
+
+            // Step 2: passed — write permanently
+            const body = {
+                form_type: formType,
+                data: newPatchedData,
+                fixes: [{ field, new_value: value }],
+                pdf_type: 'digital',
+                human_verified_fields: [field],
+                context: { filename },
+            };
+
+            const r = await fetch(`${baseUrl}/apply-fixes`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+
+            const data = await r.json().catch(() => ({}));
+
+            if (!r.ok) {
+                setFieldErrors(prev => ({
+                    ...prev,
+                    [filename]: {
+                        ...(prev[filename] || {}),
+                        [field]: data?.error || data?.message || `Save failed (${r.status})`
+                    }
+                }));
+                return;
+            }
+
+            // Update patchedData with the confirmed value
+            setPatchedData(prev => ({
+                ...prev,
+                [filename]: { ...(prev[filename] || {}), [field]: value }
+            }));
+
+            // Build new exception list from response (deduplicated, classified first)
+            const seen = new Set();
+            const newExceptions = [];
+            const dedup = (arr, source) => (arr || []).forEach(exc => {
+                const key = `${exc.code || ''}:${exc.field || ''}`;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    newExceptions.push({ ...exc, _source: source });
+                }
+            });
+            dedup(data.fixable_exceptions, 'fixable');
+            dedup(data.review_exceptions,  'review');
+            dedup(data.exceptions,         'exceptions');
+
+            // Replace this file's exception list wholesale
+            setLiveExceptions(prev => ({ ...prev, [filename]: newExceptions }));
+
+            // Keep parent results in sync
+            if (setResults) {
+                setResults(prev => ({
+                    ...prev,
+                    [filename]: { ...(prev[filename] || {}), ...data }
+                }));
+            }
+
+            // Check if this field still has an exception — if yes, show inline error
+            const fieldLower = (field || '').toLowerCase();
+            const stillFailing = newExceptions.find(e =>
+                (e.field || '').toLowerCase() === fieldLower
+            );
+            if (stillFailing) {
+                const reason = stillFailing.description
+                    || stillFailing.edit_hint
+                    || stillFailing.code
+                    || 'Value did not pass IRS validation rules';
+                setFieldErrors(prev => ({
+                    ...prev,
+                    [filename]: { ...(prev[filename] || {}), [field]: reason }
+                }));
+            } else {
+                setFieldErrors(prev => ({
+                    ...prev,
+                    [filename]: { ...(prev[filename] || {}), [field]: null }
+                }));
+            }
+
+        } catch (e) {
+            setFieldErrors(prev => ({
+                ...prev,
+                [filename]: {
+                    ...(prev[filename] || {}),
+                    [field]: e?.message || 'Network error'
+                }
+            }));
+        } finally {
+            setSubmitting(prev => ({ ...prev, [filename]: false }));
+        }
+    };
+
+    // Build cards from liveExceptions (ground truth after every submit)
+    const allCards = [];
+    files.filter(f => f.status === 'completed').forEach(f => {
+        const filename = f.file.name;
+        const r = results[filename] || {};
+        const formType = f.form_type || r.form_type || '—';
+        const exceptions = liveExceptions[filename] || [];
+        exceptions.forEach(exc => {
+            allCards.push({ exc, formType, filename, result: r });
+        });
+    });
+
+    // Stats — driven by allCards (always accurate)
     const totalExc = allCards.length;
     const affectedForms = new Set(allCards.map(c => c.filename)).size;
     const allConfs = Object.values(results).filter(r => r?.document_confidence).map(r => r.document_confidence);
     const avgConf = allConfs.length ? Math.round(allConfs.reduce((s, v) => s + v, 0) / allConfs.length * 100) : null;
 
-    // Severity filter
-    const sevFilterMap = { 'All Types': null, 'Data Mismatch': 'mismatch', 'Missing Doc': 'missing', 'Calculation': 'calc', 'IRS Flag': 'irs' };
     const filterCards = (card) => {
         if (filterType === 'All Types') return true;
         const code = (card.exc.code || '').toUpperCase();
@@ -2843,91 +2924,26 @@ function PageExceptions({ files, results, apiUrl, setResults }) {
                         </div>
                     )}
                     <div className="exception-grid" id="exception-grid-container">
-                        {visible.map((card, i) => (
+                        {visible.map((card) => (
                             <LiveExcCard
-                                key={`${card.filename}-${card.exc.code}-${card.exc.field}-${i}`}
+                                key={`${card.filename}-${card.exc.code || 'nocode'}-${card.exc.field || 'nofield'}`}
                                 exc={card.exc}
                                 formType={card.formType}
                                 filename={card.filename}
                                 apiUrl={apiUrl}
                                 documentId={card.result?.document_id}
-                                docData={(() => {
-                                    const r = card.result || {};
-                                    // Try all known locations where extraction stores fields.
-                                    const candidate =
-                                        r.extracted_fields ||
-                                        r.data ||
-                                        r.raw_normalized_json ||
-                                        r.formatted_json ||
-                                        {};
-
-                                    // If the candidate is nested, flatten one level
-                                    // to match what flatten_for_validation() does on the backend.
-                                    const isNested = Object.values(candidate).some(
-                                        v => v !== null && typeof v === 'object' && !Array.isArray(v)
-                                    );
-
-                                    if (isNested) {
-                                        const flat = {};
-                                        for (const [k, v] of Object.entries(candidate)) {
-                                            if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
-                                                Object.assign(flat, v);
-                                            } else {
-                                                flat[k] = v;
-                                            }
-                                        }
-                                        return flat;
-                                    }
-
-                                    return candidate;
-                                })()}
-                                onResolved={(excKey, apiData) => {
-                                    if (!setResults) return;
-                                    setResults(prev => {
-                                        const fileResult = prev[card.filename];
-                                        if (!fileResult) return prev;
-
-                                        // Always prune the resolved exception by key.
-                                        const removeByKey = (arr) =>
-                                            (arr || []).filter(e =>
-                                                `${e.code || ''}:${e.field || ''}` !== excKey
-                                            );
-
-                                        const pruned = {
-                                            ...fileResult,
-                                            exceptions:          removeByKey(fileResult.exceptions),
-                                            fixable_exceptions:  removeByKey(fileResult.fixable_exceptions),
-                                            review_exceptions:   removeByKey(fileResult.review_exceptions),
-                                        };
-
-                                        // If apiData is null (local accept from guard) — use pruned only.
-                                        if (!apiData) {
-                                            return { ...prev, [card.filename]: pruned };
-                                        }
-
-                                        // Merge apiData into pruned. Only replace exception arrays
-                                        // if the engine found something new (non-empty arrays).
-                                        const merged = { ...pruned };
-
-                                        if (Array.isArray(apiData.exceptions) && apiData.exceptions.length > 0) {
-                                            merged.exceptions = apiData.exceptions;
-                                        }
-                                        if (Array.isArray(apiData.fixable_exceptions) && apiData.fixable_exceptions.length > 0) {
-                                            merged.fixable_exceptions = apiData.fixable_exceptions;
-                                        }
-                                        if (Array.isArray(apiData.review_exceptions) && apiData.review_exceptions.length > 0) {
-                                            merged.review_exceptions = apiData.review_exceptions;
-                                        }
-
-                                        // Merge other fields (confidence, data, etc.)
-                                        // but never let apiData's empty arrays overwrite pruned's.
-                                        const safeApiData = { ...apiData };
-                                        delete safeApiData.exceptions;
-                                        delete safeApiData.fixable_exceptions;
-                                        delete safeApiData.review_exceptions;
-
-                                        return { ...prev, [card.filename]: { ...merged, ...safeApiData } };
-                                    });
+                                validationError={fieldErrors[card.filename]?.[card.exc.field] || null}
+                                isSubmitting={!!submitting[card.filename]}
+                                onSubmit={(field, value) =>
+                                    handleCardSubmit(card.filename, field, value, card.formType)
+                                }
+                                onEscalate={(field) => {
+                                    setLiveExceptions(prev => ({
+                                        ...prev,
+                                        [card.filename]: (prev[card.filename] || []).filter(e =>
+                                            (e.field || '') !== field
+                                        )
+                                    }));
                                 }}
                             />
                         ))}
