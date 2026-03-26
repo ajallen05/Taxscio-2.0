@@ -203,15 +203,18 @@ class DocumentValidatorAdapter:
 
     def _call_local(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Call internal gate logic directly (monolith path)."""
-        from backend.adapters.gate import GateAdapter
-        gate = GateAdapter()
+        from backend.ingestion.gate import verify_is_tax_form_from_pdf
 
         b64_str = payload.get("document_bytes", "")
         file_bytes = base64.b64decode(b64_str) if b64_str else b""
         request_id = payload.get("request_id", "")
 
-        # Call the monolith gate logic
-        gate_result = gate.verify_pdf(file_bytes)
+        try:
+            # Call the monolith gate logic
+            gate_result = verify_is_tax_form_from_pdf(file_bytes)
+        except Exception as exc:
+            log.warning("DocumentValidatorAdapter._call_local gate failed: %s", exc)
+            return _fail_open_dict(request_id)
 
         # Map to the unified adapter response format
         is_valid = gate_result.get("is_tax_form", True)
@@ -249,9 +252,8 @@ class DocumentValidatorAdapter:
         full pipeline just to get to verify_text().
         """
         try:
-            from backend.adapters.gate import GateAdapter
-            gate = GateAdapter()
-            gate_result = gate.verify_text(text)
+            from backend.ingestion.gate import verify_is_tax_form_from_text
+            gate_result = verify_is_tax_form_from_text(text)
 
             is_valid = gate_result.get("is_tax_form", True)
             score = gate_result.get("score", -1)

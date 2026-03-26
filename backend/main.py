@@ -12,9 +12,6 @@ import time
 import logging
 import secrets
 import base64
-import socket
-from pathlib import Path
-from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -49,11 +46,9 @@ from backend.utils.schemas import get_schema, get_available_forms
 from backend.ledger.database import init_db, SessionLocal
 from backend.ledger.schemas import DocumentCreate as LedgerDocumentCreate
 from backend.ledger.services import create_document as ledger_create_document
-from backend.ledger.services import update_local_json_path as ledger_update_local_json_path
 
 # ── Client Database integration ───────────────────────────────────────────────
 from backend.client_database.database import init_db as client_init_db
-from backend.client_database.database import SessionLocal as ClientSessionLocal
 from backend.client_database.routes import router as client_router
 
 def _ledger_get_session():
@@ -61,17 +56,43 @@ def _ledger_get_session():
         return SessionLocal()
     return None
 
-def _client_get_session():
-    if ClientSessionLocal is not None:
-        return ClientSessionLocal()
-    return None
-
 from backend.ledger.routes import ledger_bp
-from flask import Flask
+from flask import Flask, request as flask_request
 from fastapi.middleware.wsgi import WSGIMiddleware
 
 flask_app = Flask(__name__)
 flask_app.register_blueprint(ledger_bp)
+
+# Handle CORS preflight (OPTIONS) — Flask routes only declare POST/GET,
+# so without this the browser gets 405 and blocks the real request.
+@flask_app.before_request
+def _flask_cors_preflight():
+    if flask_request.method == "OPTIONS":
+        from flask import make_response
+        resp = make_response()
+        resp.status_code = 204
+        return resp
+
+@flask_app.after_request
+def _flask_cors(response):
+    origin = flask_request.headers.get("Origin", "")
+    _flask_allowed = {
+        "http://localhost", "http://localhost:80",
+        "http://localhost:5173", "http://127.0.0.1:5173",
+        "http://localhost:3000", "http://127.0.0.1:3000",
+        "http://localhost:3001", "http://127.0.0.1:3001",
+        "http://localhost:3002", "http://127.0.0.1:3002",
+        "null",
+    }
+    _ec2 = os.environ.get("EC2_ORIGIN")
+    if _ec2:
+        _flask_allowed.add(_ec2)
+    if origin in _flask_allowed:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Request-ID"
+    return response
 
 _extraction_engine = ExtractionEngineAdapter()
 _data_integrity = DataIntegrityEngineAdapter()
@@ -86,9 +107,23 @@ client = NuMind(api_key=API_KEY)
 
 log = logging.getLogger("Taxscio.gateway")
 
+# ── FastAPI app ───────────────────────────────────────────────────────────────
+app = FastAPI(
+    title="Taxscio API Gateway",
+    version="1.0.0",
+    description="Tax document extraction and validation gateway",
+)
 
-def _init_databases() -> None:
-    """Initialise database tables when the app process starts."""
+# ── Ledger router ─────────────────────────────────────────────────────────────
+app.mount("/ledger", WSGIMiddleware(flask_app))
+
+# ── Client Database router ────────────────────────────────────────────────────
+app.include_router(client_router)
+
+
+@app.on_event("startup")
+def _startup():
+    """Initialise the ledger database tables on server start."""
     try:
         init_db()
         log.info("Ledger DB initialised (tables created if missing).")
@@ -99,26 +134,6 @@ def _init_databases() -> None:
         log.info("Client DB initialised (tables created if missing).")
     except Exception as exc:
         log.warning("Client DB init skipped: %s", exc)
-
-
-@asynccontextmanager
-async def lifespan(_app: FastAPI):
-    _init_databases()
-    yield
-
-# ── FastAPI app ───────────────────────────────────────────────────────────────
-app = FastAPI(
-    title="Taxscio API Gateway",
-    version="1.0.0",
-    description="Tax document extraction and validation gateway",
-    lifespan=lifespan,
-)
-
-# ── Ledger router ─────────────────────────────────────────────────────────────
-app.mount("/ledger", WSGIMiddleware(flask_app))
-
-# ── Client Database router ────────────────────────────────────────────────────
-app.include_router(client_router)
 
 # ── CORS — must be added before routes ────────────────────────────────────────
 _allowed_origins = [
@@ -171,7 +186,6 @@ def _submit_to_ledger(
     validation_data: dict | None = None,
     stage: str = "AI Processing",
     status: str = "EXTRACTED",
-    local_json_path: str | None = None,
 ) -> str | None:
     """
     Persist an AI-processing ledger record after a successful extraction.
@@ -251,11 +265,11 @@ def _submit_to_ledger(
         confidence_score=confidence_score,
         cpa=ctx.get("cpa"),
         due_date=ctx.get("due_date"),
-        local_json_path=local_json_path,
+        extraction_data=extraction_data,
+        validation_data=validation_data,
     )
     try:
-        client_db = _client_get_session()
-        doc_id = ledger_create_document(db, data, client_db=client_db)
+        doc_id = ledger_create_document(db, data)
         log.info("Ledger auto-submit OK: document_id=%s form=%s client=%s",
                  doc_id, form_type, client_name)
         return doc_id
@@ -265,23 +279,31 @@ def _submit_to_ledger(
         return None
     finally:
         db.close()
-        if client_db is not None:
-            client_db.close()
 
-
-def _update_ledger_local_json_path(document_id: str | None, local_json_path: str | None) -> None:
-    if not document_id or not local_json_path:
-        return
+def _get_escalated_exceptions(document_id: str) -> list[dict]:
+    """Fetch escalated exceptions from the ledger audit trail to silence them."""
     db = _ledger_get_session()
-    if db is None:
-        return
+    if db is None or not document_id:
+        return []
     try:
-        ledger_update_local_json_path(db, document_id, local_json_path)
+        from backend.ledger.models import Ledger
+        ledger = db.query(Ledger).filter(Ledger.document_id == document_id).first()
+        if not ledger or not ledger.audit_trail:
+            return []
+        escalated = []
+        for item in ledger.audit_trail:
+            if item.get("type") == "exception_escalated":
+                escalated.append({
+                    "code": item.get("exception_code"),
+                    "field": item.get("exception_field")
+                })
+        return escalated
     except Exception as exc:
-        db.rollback()
-        log.warning("Failed to update ledger local_json_path for %s: %s", document_id, exc)
+        log.warning("Failed to fetch escalated exceptions: %s", exc)
+        return []
     finally:
         db.close()
+
 
 # ── Event / Agent logging ──────────────────────────────────────────────────────
 
@@ -394,64 +416,13 @@ def _check_file_ext(filename: str) -> str | None:
     return ext if ext in SUPPORTED_EXTENSIONS else None
 
 
-def _safe_name(raw: str | None) -> str:
-    text = (raw or "unknown").strip().lower()
-    return "".join(ch if (ch.isalnum() or ch in ("-", "_", ".")) else "_" for ch in text).strip("._") or "unknown"
-
-
-def _local_extractions_dir() -> Path:
-    configured = os.environ.get("EXTRACTED_JSON_DIR", "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    return Path(_backend_dir) / "local_extractions"
-
-
-def _persist_extraction_snapshot(
-    *,
-    payload: dict[str, Any],
-    form_type: str | None = None,
-    document_id: str | None = None,
-    filename: str | None = None,
-    session_id: str | None = None,
-    source: str = "unknown",
-) -> str:
-    """
-    Save extraction payload to local disk and keep one file per document/upload key.
-    """
-    base_dir = _local_extractions_dir()
-    base_dir.mkdir(parents=True, exist_ok=True)
-
-    doc_key = _safe_name(document_id) if document_id else ""
-    filename_key = _safe_name(os.path.splitext(filename or "")[0]) if filename else ""
-    form_key = _safe_name(form_type)
-    session_key = _safe_name(session_id)
-    file_key = doc_key or filename_key or session_key or "unknown"
-
-    out_path = base_dir / f"{file_key}.json"
-    envelope = {
-        "meta": {
-            "document_id": document_id,
-            "filename": filename,
-            "form_type": form_type,
-            "session_id": session_id,
-            "source": source,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "storage_key": file_key,
-            "storage_form_key": form_key,
-        },
-        "payload": payload,
-    }
-    with out_path.open("w", encoding="utf-8") as f:
-        json.dump(envelope, f, indent=2, default=str)
-    return str(out_path)
-
-
 # ── Request models (Group A JSON routes) ──────────────────────────────────────
 
 class ValidateBody(BaseModel):
     model_config = {"extra": "allow"}
     form_type: str | None = None
     data: Any = None
+    fixes: list[Any] = []
     pdf_type: str = "digital"
     context: dict[str, Any] = {}
     human_verified_fields: list[str] = []
@@ -738,23 +709,10 @@ def extract(
             confidence_score=final_response.get("document_confidence"),
             context=context_dict,
             extraction_data=normalized,
-            validation_data={**integrity_data, "summary": final_response.get("summary", {})},
+            validation_data=integrity_data,
         )
         if doc_id:
             final_response["document_id"] = doc_id
-
-        try:
-            saved_path = _persist_extraction_snapshot(
-                payload=final_response,
-                form_type=form_type,
-                document_id=doc_id,
-                filename=file.filename or "unknown",
-                source="extract",
-            )
-            final_response["local_json_path"] = saved_path
-            _update_ledger_local_json_path(doc_id, saved_path)
-        except Exception as persist_err:
-            log.warning("Failed to persist extracted JSON to local disk: %s", persist_err)
 
         # Debug dump to disk
         try:
@@ -787,38 +745,21 @@ def validate_route(req: Request, body: ValidateBody):
                 status_code=400,
             )
 
+        # Apply fixes before validating so the engine sees CPA's submitted values
+        # mapped to the correct extracted-data keys (e.g. box_7_distribution_code)
+        data_to_validate = body.data
+        if body.fixes:
+            data_to_validate = _data_integrity._patch_nested(body.data, body.fixes)
+
         result = _data_integrity.validate(
             form_type=form_type,
-            extracted_fields=body.data,
+            extracted_fields=data_to_validate,
             context=body.context,
             pdf_type=body.pdf_type,
             human_verified_fields=body.human_verified_fields,
             request_id=req.headers.get("X-Request-ID"),
         )
         integrity_data = result["data"]
-
-        summary_pipeline = {
-            "val_result": {
-                "exceptions": integrity_data.get("exceptions", []),
-                "errors": integrity_data.get("errors", []),
-                "confidence": integrity_data.get("confidence", 1.0),
-                "summary": integrity_data.get("summary_validation") or {},
-            },
-            "fixable_exceptions": integrity_data.get("fixable_exceptions", []),
-            "review_exceptions": integrity_data.get("review_exceptions", []),
-            "confidence_result": {
-                "field_scores": integrity_data.get("field_confidence", {}),
-                "document_confidence": integrity_data.get("document_confidence", 1.0),
-                "needs_review": integrity_data.get("needs_review", False),
-                "review_fields": integrity_data.get("review_fields", []),
-            },
-        }
-        export_result = _export_formatter.format_extraction(
-            form_type=form_type,
-            validated_data=body.data,
-            pipeline_result=summary_pipeline,
-            pdf_type=body.pdf_type or "digital",
-        )
 
         doc_id = None
         if body.filename:
@@ -828,7 +769,7 @@ def validate_route(req: Request, body: ValidateBody):
                 confidence_score=integrity_data.get("document_confidence", 1.0),
                 context=body.context,
                 extraction_data=body.data,
-                validation_data={**integrity_data, "summary": export_result.get("summary", {})},
+                validation_data=integrity_data,
                 stage="Validation",
                 status="VALIDATED"
             )
@@ -840,7 +781,7 @@ def validate_route(req: Request, body: ValidateBody):
             "confidence":            integrity_data.get("confidence", 1.0),
             "errors":                integrity_data.get("errors", []),
             "exceptions":            integrity_data.get("exceptions", []),
-            "summary":               export_result.get("summary", {}),
+            "summary":               integrity_data.get("summary_validation") or {},
             "fixable_exceptions":    integrity_data.get("fixable_exceptions", []),
             "review_exceptions":     integrity_data.get("review_exceptions", []),
             "data":                  body.data,
@@ -856,6 +797,102 @@ def validate_route(req: Request, body: ValidateBody):
             {"error": str(e), "trace": traceback.format_exc()},
             status_code=500,
         )
+
+
+class ClientSummaryBody(BaseModel):
+    model_config = {"extra": "allow"}
+    client_name: str = ""
+    stage: str = "Document Collection"
+    total_docs: int = 0
+    validated_count: int = 0
+    needs_review_count: int = 0
+    avg_confidence: float | None = None
+    exception_total: int = 0
+    escalation_count: int = 0
+    form_types: list[str] = []
+    completed_uploads: int = 0
+
+
+@app.post("/client-summary")
+def client_summary_route(body: ClientSummaryBody):
+    """Generate an AI client filing summary using Gemini — same pattern as export_formatter._build_summary."""
+    import httpx, json as _json
+
+    gemini_key = (os.environ.get("GEMINI_API_KEY") or "").strip()
+    gemini_model = (os.environ.get("GEMINI_MODEL") or "gemini-2.5-flash").strip()
+
+    if not gemini_key:
+        return JSONResponse({"error": "GEMINI_API_KEY not configured", "status": "error"}, status_code=503)
+
+    forms_str = ", ".join(body.form_types) if body.form_types else "None detected yet"
+    conf_str = f"{body.avg_confidence}%" if body.avg_confidence is not None else "N/A"
+
+    prompt = (
+        "You are a tax document summarization assistant for a CPA workflow platform. "
+        "Write a concise client filing overview for internal CPA use. "
+        f"Start with a bold heading: **{body.client_name} - Filing Overview**\n"
+        "Then provide 4-6 bullet points (each starting with •) covering:\n"
+        "  - Total linked documents and form types\n"
+        "  - Pipeline progress and current stage\n"
+        "  - Validation status and exception count\n"
+        "  - Average extraction confidence\n"
+        "  - Any key risks or recommended next action\n"
+        "Return ONLY the heading and bullet points. No markdown headers, no extra explanation.\n\n"
+        f"Client data:\n"
+        f"  Client: {body.client_name}\n"
+        f"  Stage: {body.stage}\n"
+        f"  Total documents: {body.total_docs}\n"
+        f"  Form types detected: {forms_str}\n"
+        f"  Processed/completed: {body.completed_uploads} of {body.total_docs}\n"
+        f"  Validated: {body.validated_count}\n"
+        f"  Needs review: {body.needs_review_count}\n"
+        f"  Open exceptions: {body.exception_total}\n"
+        f"  Escalated exceptions: {body.escalation_count}\n"
+        f"  Average confidence: {conf_str}"
+    )
+
+    request_body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 300},
+    }
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{gemini_model}:generateContent"
+    )
+
+    try:
+        response = httpx.post(
+            url,
+            content=_json.dumps(request_body),
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": gemini_key,
+            },
+            timeout=20.0,
+        )
+        response.raise_for_status()
+        data = response.json()
+        summary_text = (
+            data.get("candidates", [{}])[0]
+            .get("content", {})
+            .get("parts", [{}])[0]
+            .get("text", "")
+            .strip()
+        )
+        if not summary_text:
+            return JSONResponse({"error": "Gemini returned empty response", "status": "error"}, status_code=500)
+        return {
+            "summary_text": summary_text,
+            "model": gemini_model,
+            "status": "ok",
+        }
+    except httpx.HTTPStatusError as exc:
+        log.warning("client-summary HTTP error %s: %s", exc.response.status_code, exc.response.text[:200])
+        return JSONResponse({"error": f"Gemini HTTP {exc.response.status_code}: {exc.response.text[:100]}", "status": "error"}, status_code=502)
+    except Exception as exc:
+        log.warning("client-summary Gemini error: %s", exc)
+        return JSONResponse({"error": str(exc), "status": "error"}, status_code=500)
 
 
 @app.post("/apply-fixes")
@@ -888,30 +925,6 @@ def apply_fixes_route(req: Request, body: ApplyFixesBody):
             request_id=req.headers.get("X-Request-ID"),
         )
         integrity_data = result["data"]
-        patched_data = integrity_data.get("patched_fields") or body.data
-
-        summary_pipeline = {
-            "val_result": {
-                "exceptions": integrity_data.get("exceptions", []),
-                "errors": integrity_data.get("errors", []),
-                "confidence": integrity_data.get("confidence", 1.0),
-                "summary": integrity_data.get("summary_validation") or {},
-            },
-            "fixable_exceptions": integrity_data.get("fixable_exceptions", []),
-            "review_exceptions": integrity_data.get("review_exceptions", []),
-            "confidence_result": {
-                "field_scores": integrity_data.get("field_confidence", {}),
-                "document_confidence": integrity_data.get("document_confidence", 1.0),
-                "needs_review": integrity_data.get("needs_review", False),
-                "review_fields": integrity_data.get("review_fields", []),
-            },
-        }
-        export_result = _export_formatter.format_extraction(
-            form_type=form_type,
-            validated_data=patched_data,
-            pipeline_result=summary_pipeline,
-            pdf_type=body.pdf_type or "digital",
-        )
         
         doc_id = None
         if body.context.get("filename"):
@@ -920,23 +933,30 @@ def apply_fixes_route(req: Request, body: ApplyFixesBody):
                 form_type=form_type,
                 confidence_score=integrity_data.get("document_confidence", 1.0),
                 context=body.context,
-                extraction_data=patched_data,
+                extraction_data=integrity_data.get("patched_fields") or body.data,
                 validation_data=integrity_data,
                 stage="Correction",
                 status="VALIDATED"
             )
 
-        response_payload = {
+        return {
             "form_type":             form_type,
             "document_id":          doc_id,
             "pdf_type":              body.pdf_type,
             "confidence":            integrity_data.get("confidence", 1.0),
             "errors":                integrity_data.get("errors", []),
             "exceptions":            integrity_data.get("exceptions", []),
-            "summary":               export_result.get("summary", {}),
+            "summary":               _export_formatter._build_summary(
+                form_type=form_type,
+                flat_data=__import__("backend.utils.data", fromlist=["flatten_for_validation"]).flatten_for_validation(integrity_data.get("patched_fields") or body.data),
+                nested_data=integrity_data.get("patched_fields") or body.data,
+                exceptions_resolved=[],
+                document_confidence=integrity_data.get("document_confidence"),
+                needs_review=integrity_data.get("needs_review")
+            ),
             "fixable_exceptions":    integrity_data.get("fixable_exceptions", []),
             "review_exceptions":     integrity_data.get("review_exceptions", []),
-            "data":                  patched_data,
+            "data":                  integrity_data.get("patched_fields") or body.data,
             "field_confidence":      integrity_data.get("field_confidence", {}),
             "document_confidence":   integrity_data.get("document_confidence", 1.0),
             "needs_review":          integrity_data.get("needs_review", False),
@@ -944,21 +964,6 @@ def apply_fixes_route(req: Request, body: ApplyFixesBody):
             "human_verified_fields": integrity_data.get("human_verified_fields", body.human_verified_fields),
             "fixes_applied":         integrity_data.get("fixes_applied", len(body.fixes)),
         }
-
-        try:
-            saved_path = _persist_extraction_snapshot(
-                payload=response_payload,
-                form_type=form_type,
-                document_id=doc_id or body.context.get("document_id"),
-                filename=body.context.get("filename"),
-                source="apply-fixes",
-            )
-            response_payload["local_json_path"] = saved_path
-            _update_ledger_local_json_path(doc_id or body.context.get("document_id"), saved_path)
-        except Exception as persist_err:
-            log.warning("Failed to persist corrected JSON to local disk: %s", persist_err)
-
-        return response_payload
 
     except Exception as e:
         return JSONResponse(
@@ -991,30 +996,6 @@ def revalidate_route(req: Request, body: RevalidateBody):
             request_id=req.headers.get("X-Request-ID"),
         )
         integrity_data = result["data"]
-        patched_data = integrity_data.get("patched_fields") or body.data
-
-        summary_pipeline = {
-            "val_result": {
-                "exceptions": integrity_data.get("exceptions", []),
-                "errors": integrity_data.get("errors", []),
-                "confidence": integrity_data.get("confidence", 1.0),
-                "summary": integrity_data.get("summary_validation") or {},
-            },
-            "fixable_exceptions": integrity_data.get("fixable_exceptions", []),
-            "review_exceptions": integrity_data.get("review_exceptions", []),
-            "confidence_result": {
-                "field_scores": integrity_data.get("field_confidence", {}),
-                "document_confidence": integrity_data.get("document_confidence", 1.0),
-                "needs_review": integrity_data.get("needs_review", False),
-                "review_fields": integrity_data.get("review_fields", []),
-            },
-        }
-        export_result = _export_formatter.format_extraction(
-            form_type=form_type,
-            validated_data=patched_data,
-            pipeline_result=summary_pipeline,
-            pdf_type=body.pdf_type or "digital",
-        )
         
         doc_id = None
         if body.context.get("filename"):
@@ -1023,7 +1004,7 @@ def revalidate_route(req: Request, body: RevalidateBody):
                 form_type=form_type,
                 confidence_score=integrity_data.get("document_confidence", 1.0),
                 context=body.context,
-                extraction_data=patched_data,
+                extraction_data=body.data,
                 validation_data=integrity_data,
                 stage="Re-validation",
                 status="VALIDATED"
@@ -1036,10 +1017,17 @@ def revalidate_route(req: Request, body: RevalidateBody):
             "confidence":            integrity_data.get("confidence", 1.0),
             "errors":                integrity_data.get("errors", []),
             "exceptions":            integrity_data.get("exceptions", []),
-            "summary":               export_result.get("summary", {}),
+            "summary":               _export_formatter._build_summary(
+                form_type=form_type,
+                flat_data=__import__("backend.utils.data", fromlist=["flatten_for_validation"]).flatten_for_validation(body.data),
+                nested_data=body.data,
+                exceptions_resolved=[],
+                document_confidence=integrity_data.get("document_confidence"),
+                needs_review=integrity_data.get("needs_review")
+            ),
             "fixable_exceptions":    integrity_data.get("fixable_exceptions", []),
             "review_exceptions":     integrity_data.get("review_exceptions", []),
-            "data":                  patched_data,
+            "data":                  body.data,
             "field_confidence":      integrity_data.get("field_confidence", {}),
             "document_confidence":   integrity_data.get("document_confidence", 1.0),
             "needs_review":          integrity_data.get("needs_review", False),
@@ -1223,7 +1211,8 @@ async def api_extract(
         await log_event("EXTRACT", f"form={form_type} fields={len(normalized)} ocr={ocr_source}", session["session_id"])
 
         # ── Auto-submit ledger record ─────────────────────────────────────────
-        doc_id = _submit_to_ledger(
+        doc_id = await asyncio.to_thread(
+            _submit_to_ledger,
             filename=session.get("filename", "unknown_from_session"),
             form_type=form_type,
             confidence_score=integrity_data.get("document_confidence", 1.0),
@@ -1233,38 +1222,26 @@ async def api_extract(
         )
         if doc_id:
             session["document_id"] = doc_id
-        response_data = {
-            "form_type": form_type,
-            "document_id": doc_id,
-            "pdf_type": pdf_type,
-            "ocr_source": ocr_source,
-            "extracted_fields": normalized,
-            "exceptions": exceptions,
-            "fixable_exceptions": integrity_data.get("fixable_exceptions", []),
-            "review_exceptions": integrity_data.get("review_exceptions", []),
-            "field_confidence": integrity_data.get("field_confidence", {}),
-            "document_confidence": integrity_data.get("document_confidence", 1.0),
-            "needs_review": integrity_data.get("needs_review", False),
-            "review_fields": integrity_data.get("review_fields", []),
-            "pipeline_stage": "extracted",
-            "latency": {"extraction_seconds": extraction_latency},
-        }
-        try:
-            saved_path = _persist_extraction_snapshot(
-                payload=response_data,
-                form_type=form_type,
-                document_id=doc_id,
-                filename=session.get("filename"),
-                session_id=session["session_id"],
-                source="api-extract",
-            )
-            response_data["local_json_path"] = saved_path
-            session["local_json_path"] = saved_path
-            _update_ledger_local_json_path(doc_id, saved_path)
-        except Exception as persist_err:
-            log.warning("Failed to persist session extracted JSON to local disk: %s", persist_err)
 
-        return _taxio_response(data=response_data, request_id=session["session_id"])
+        return _taxio_response(
+            data={
+                "form_type": form_type,
+                "document_id": doc_id,
+                "pdf_type": pdf_type,
+                "ocr_source": ocr_source,
+                "extracted_fields": normalized,
+                "exceptions": exceptions,
+                "fixable_exceptions": integrity_data.get("fixable_exceptions", []),
+                "review_exceptions": integrity_data.get("review_exceptions", []),
+                "field_confidence": integrity_data.get("field_confidence", {}),
+                "document_confidence": integrity_data.get("document_confidence", 1.0),
+                "needs_review": integrity_data.get("needs_review", False),
+                "review_fields": integrity_data.get("review_fields", []),
+                "pipeline_stage": "extracted",
+                "latency": {"extraction_seconds": extraction_latency},
+            },
+            request_id=session["session_id"],
+        )
 
     except ExtractionFailedError as e:
         return JSONResponse(
@@ -1308,13 +1285,19 @@ async def api_correct(
 
         form_type = session["form_type"]
         extracted_fields = session["extracted_fields"]
+        doc_id = session.get("document_id")
 
-        result = _data_integrity.apply_fixes(
-            form_type=form_type,
-            extracted_fields=extracted_fields,
-            fixes=body.corrections,
-            pdf_type=session.get("pdf_type"),
-            human_verified_fields=body.human_verified_fields,
+        escalated = _get_escalated_exceptions(doc_id) if doc_id else []
+        context = {"workflow": {"escalated_exceptions": escalated}}
+
+        result = await asyncio.to_thread(
+            _data_integrity.apply_fixes,
+            form_type,
+            extracted_fields,
+            body.corrections,
+            context,
+            session.get("pdf_type"),
+            body.human_verified_fields
         )
         integrity_data = result["data"]
 
@@ -1331,7 +1314,8 @@ async def api_correct(
         await log_event("CORRECT", f"fixes={len(body.corrections)}", session["session_id"])
 
         # Update ledger status to VALIDATED
-        _submit_to_ledger(
+        await asyncio.to_thread(
+            _submit_to_ledger,
             filename=session.get("filename", "unknown"),
             form_type=form_type,
             confidence_score=integrity_data.get("document_confidence", 1.0),
@@ -1342,35 +1326,22 @@ async def api_correct(
             status="VALIDATED"
         )
 
-        response_data = {
-            "form_type": form_type,
-            "document_id": session.get("document_id"),
-            "extracted_fields": patched,
-            "exceptions": integrity_data.get("exceptions", []),
-            "fixable_exceptions": integrity_data.get("fixable_exceptions", []),
-            "review_exceptions": integrity_data.get("review_exceptions", []),
-            "field_confidence": integrity_data.get("field_confidence", {}),
-            "document_confidence": integrity_data.get("document_confidence", 1.0),
-            "needs_review": integrity_data.get("needs_review", False),
-            "fixes_applied": integrity_data.get("fixes_applied", len(body.corrections)),
-            "pipeline_stage": "corrected",
-        }
-        try:
-            saved_path = _persist_extraction_snapshot(
-                payload=response_data,
-                form_type=form_type,
-                document_id=session.get("document_id"),
-                filename=session.get("filename"),
-                session_id=session["session_id"],
-                source="api-correct",
-            )
-            response_data["local_json_path"] = saved_path
-            session["local_json_path"] = saved_path
-            _update_ledger_local_json_path(session.get("document_id"), saved_path)
-        except Exception as persist_err:
-            log.warning("Failed to persist corrected session JSON to local disk: %s", persist_err)
-
-        return _taxio_response(data=response_data, request_id=session["session_id"])
+        return _taxio_response(
+            data={
+                "form_type": form_type,
+                "document_id": session.get("document_id"),
+                "extracted_fields": patched,
+                "exceptions": integrity_data.get("exceptions", []),
+                "fixable_exceptions": integrity_data.get("fixable_exceptions", []),
+                "review_exceptions": integrity_data.get("review_exceptions", []),
+                "field_confidence": integrity_data.get("field_confidence", {}),
+                "document_confidence": integrity_data.get("document_confidence", 1.0),
+                "needs_review": integrity_data.get("needs_review", False),
+                "fixes_applied": integrity_data.get("fixes_applied", len(body.corrections)),
+                "pipeline_stage": "corrected",
+            },
+            request_id=session["session_id"],
+        )
 
     except Exception as e:
         return JSONResponse(
@@ -1589,26 +1560,6 @@ async def api_session_stage(
 
 if __name__ == "__main__":
     import uvicorn
-
-    def _is_port_available(port: int, host: str = "0.0.0.0") -> bool:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            try:
-                sock.bind((host, port))
-                return True
-            except OSError:
-                return False
-
-    base_port = int(os.environ.get("PORT", "8000"))
-    selected_port = base_port
-    if not _is_port_available(base_port):
-        for candidate in range(base_port + 1, base_port + 21):
-            if _is_port_available(candidate):
-                selected_port = candidate
-                break
-
-    if selected_port != base_port:
-        print(f"Port {base_port} is busy; starting on http://localhost:{selected_port}")
-
-    print(f"Taxscio API Gateway starting on http://localhost:{selected_port}")
+    print("Taxscio API Gateway starting on http://localhost:8000")
     print("Backend: nuextract.ai hosted API (NuExtract 2.0 PRO)")
-    uvicorn.run(app, host="0.0.0.0", port=selected_port)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

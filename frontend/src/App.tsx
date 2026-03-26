@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * App.jsx — Taxscio Complete Platform
  * All 12 pages, live APIs connected, static placeholders where no endpoint exists.
@@ -858,71 +859,53 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results, setResu
         };
     }, [clientDocumentRows, clientActivityRows, clientExceptionTotal]);
 
-    const clientNarrativeSummary = useMemo(() => {
-        const totalDocs = clientSummary.totalLinkedDocs || 0;
-        if (totalDocs === 0) {
-            return {
-                title: `${client.name} - Filing Overview`,
-                points: [
-                    'No client-level summary available yet.',
-                    'Upload and process documents for this client to generate an overall narrative.',
-                ],
-                latestAiNote: null,
-            };
-        }
+    const [clientAISummaryText, setClientAISummaryText] = useState('');
+    const [clientAISummaryLoading, setClientAISummaryLoading] = useState(false);
 
-        const uniqueForms = Array.from(new Set(
-            clientDocumentRows
-                .map((r) => (r.form || '').toString().trim())
-                .filter((f) => f && f !== '—'),
-        ));
-        const formsText = uniqueForms.length
-            ? uniqueForms.slice(0, 4).join(', ') + (uniqueForms.length > 4 ? ', ...' : '')
-            : 'mixed tax documents';
+    useEffect(() => {
+        if (!client?.name) return;
+        const docs = clientDocumentRows;
+        const formSet = new Set(docs.map((d) => String(d.form || '').toUpperCase()).filter(Boolean));
+        const escalations = clientActivityRows.filter((a) => a.action === 'Exception Escalated').length;
+        const completedUploads = clientFiles.filter((f) => f.status === 'completed').length;
 
-        const confidenceText = clientSummary.avgConfidence != null
-            ? `Average confidence: ${clientSummary.avgConfidence}%`
-            : 'Average confidence: still being established';
+        setClientAISummaryText('');
+        setClientAISummaryLoading(true);
+        const controller = new AbortController();
 
-        const reviewText = clientSummary.needsReviewCount > 0
-            ? `${clientSummary.needsReviewCount} document(s) require review, with ${clientExceptionTotal} open exception(s)`
-            : `${clientSummary.validatedCount} document(s) validated with no active exception backlog`;
-
-        let latestAiNote = null;
-        for (let i = clientFiles.length - 1; i >= 0; i -= 1) {
-            const file = clientFiles[i];
-            const summaryText = results[file.file?.name]?.summary?.summary_text;
-            if (summaryText) {
-                latestAiNote = String(summaryText);
-                break;
-            }
-        }
-        if (!latestAiNote) {
-            for (let i = ledgerRows.length - 1; i >= 0; i -= 1) {
-                const rec = ledgerRows[i];
-                if (!ledgerClientNameMatches(client, rec?.client_name)) continue;
-                const summaryText = rec?.validation_data?.summary?.summary_text
-                    || rec?.content_data?.summary?.summary_text;
-                if (summaryText) {
-                    latestAiNote = String(summaryText);
-                    break;
+        fetch(`${apiUrl}/client-summary`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal,
+            body: JSON.stringify({
+                client_name: client.name,
+                stage: clientSummary.stage,
+                total_docs: docs.length,
+                validated_count: clientSummary.validatedCount,
+                needs_review_count: clientSummary.needsReviewCount,
+                avg_confidence: clientSummary.avgConfidence,
+                exception_total: clientExceptionTotal,
+                escalation_count: escalations,
+                form_types: Array.from(formSet),
+                completed_uploads: completedUploads,
+            }),
+        })
+            .then((r) => r.json())
+            .then((data) => {
+                if (data.status === 'ok' && data.summary_text) {
+                    setClientAISummaryText(data.summary_text);
+                } else {
+                    setClientAISummaryText(`Error: ${data.error || 'Could not generate summary.'}`);
                 }
-            }
-        }
+            })
+            .catch((err) => {
+                if (err?.name === 'AbortError') return;
+                setClientAISummaryText(`Error: ${err?.message || 'Failed to connect to backend.'}`);
+            })
+            .finally(() => setClientAISummaryLoading(false));
 
-        return {
-            title: `${client.name} - Filing Overview`,
-            points: [
-                `Linked documents: ${totalDocs} (${formsText})`,
-                `Pipeline progress: ${clientSummary.processedCount} processed, current stage ${clientSummary.stage}`,
-                reviewText,
-                confidenceText,
-            ],
-            latestAiNote: latestAiNote && !latestAiNote.toLowerCase().includes('currently unavailable')
-                ? latestAiNote
-                : null,
-        };
-    }, [clientSummary, clientDocumentRows, clientExceptionTotal, clientFiles, results, ledgerRows, client]);
+        return () => controller.abort();
+    }, [client.name, clientSummary.stage, clientSummary.validatedCount, clientExceptionTotal]);
 
     const summaryStepIndex = useMemo(() => {
         const m = {
@@ -1108,20 +1091,27 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results, setResu
                             ))}
                         </div>
                         <div style={{ marginTop: 16, background: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: 14 }}>
-                            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 10 }}>
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
                                 Summary
+                                {clientAISummaryLoading && <span style={{ fontSize: 10, color: 'var(--amber)', fontWeight: 600, animation: 'pulse 1.5s infinite' }}>✦ Generating…</span>}
                             </div>
-                            <div style={{ fontSize: 13, color: 'var(--text-primary)', fontWeight: 700, marginBottom: 8 }}>
-                                {clientNarrativeSummary.title}
-                            </div>
-                            <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--text-secondary)', fontSize: 12, lineHeight: 1.7 }}>
-                                {(clientNarrativeSummary.points || []).map((point, idx) => (
-                                    <li key={`summary-point-${idx}`}>{point}</li>
-                                ))}
-                            </ul>
-                            {clientNarrativeSummary.latestAiNote ? (
-                                <div style={{ marginTop: 10, padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface-0)', fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-                                    <strong style={{ color: 'var(--text-primary)' }}>Latest AI note:</strong> {clientNarrativeSummary.latestAiNote}
+                            {clientAISummaryLoading && !clientAISummaryText ? (
+                                <div style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic' }}>AI is generating summary…</div>
+                            ) : clientAISummaryText ? (
+                                <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+                                    {clientAISummaryText.split('\n').map((line, i) => {
+                                        const trimmed = line.trim();
+                                        if (!trimmed) return null;
+                                        // Render **bold title** line
+                                        if (trimmed.startsWith('**') && trimmed.endsWith('**')) {
+                                            return <div key={i} style={{ fontWeight: 700, fontSize: 13, color: 'var(--text-primary)', marginBottom: 8 }}>{trimmed.replace(/\*\*/g, '')}</div>;
+                                        }
+                                        // Render bullet lines (• or -)
+                                        if (trimmed.startsWith('•') || trimmed.startsWith('-')) {
+                                            return <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 4 }}><span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>•</span><span>{trimmed.replace(/^[•\-]\s*/, '')}</span></div>;
+                                        }
+                                        return <div key={i} style={{ marginBottom: 4 }}>{trimmed}</div>;
+                                    })}
                                 </div>
                             ) : null}
                         </div>
@@ -1567,8 +1557,6 @@ function extractionMatchesClient(extraction, client) {
 }
 
 function fileMatchesClient(file, result, client) {
-    const assignedClientName = result?.assigned_client_name || result?.context?.client_name;
-    if (assignedClientName && ledgerClientNameMatches(client, assignedClientName)) return true;
     const data = result?.data || result?.extracted_fields;
     return clientIdentityMatchesClient(extractClientIdentity(data), client);
 }
@@ -1679,6 +1667,15 @@ function ClientMatchModal({ modal, apiUrl, onDismiss, onAssociated }) {
     );
 }
 
+function normalizeClientKey(name) {
+    if (!name) return '—';
+    return name
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // PAGE: FILING PIPELINE  (live from files + results)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1689,47 +1686,12 @@ function PagePipeline({ files, results, apiUrl }) {
     const [ledgerRows, setLedgerRows] = useState([]);
     const [ledgerError, setLedgerError] = useState(null);
     const [expandedClients, setExpandedClients] = useState(new Set());
-    const [clientsMap, setClientsMap] = useState({});
-
-    const normalizeClientName = (name) => (name || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
 
     const toggleClient = (name) => setExpandedClients(prev => {
         const s = new Set(prev);
         s.has(name) ? s.delete(name) : s.add(name);
         return s;
     });
-
-    // ── Fetch client data to build lookup map by name ──────────────────────
-    useEffect(() => {
-        const base = apiUrl !== undefined ? apiUrl : 'http://localhost:8000';
-        
-        async function fetchClients() {
-            try {
-                const res = await fetch(`${base}/clients?limit=500&offset=0`);
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                const clients = await res.json();
-                const map = {};
-                clients.forEach(client => {
-                    // Map by both individual and business name
-                    if (client.first_name && client.last_name) {
-                        map[normalizeClientName(`${client.first_name} ${client.last_name}`)] = client;
-                    }
-                    if (client.business_name) {
-                        map[normalizeClientName(client.business_name)] = client;
-                    }
-                    if (client.trust_name) {
-                        map[normalizeClientName(client.trust_name)] = client;
-                    }
-                });
-                setClientsMap(map);
-                console.log('Clients fetched successfully:', map);
-            } catch (err) {
-                console.error('Failed to fetch clients:', err);
-            }
-        }
-        
-        fetchClients();
-    }, [apiUrl]);
 
     // ── Poll the ledger endpoint every 10 s ───────────────────────────────
     useEffect(() => {
@@ -1792,7 +1754,7 @@ function PagePipeline({ files, results, apiUrl }) {
 
         // Extract client name from data
         let clientName = f.file.name;
-        if (r?.extracted_fields) {
+        if (r?.extracted_fields || r?.data) {
             const findName = (d) => {
                 if (!d || typeof d !== 'object' || Array.isArray(d)) return null;
                 const clientSuffixes = ['name_on_return', 'taxpayer_name', 'employee_name', 'partner_name', 'beneficiary_name', 'shareholder_name', 'client_name', 'payee_name', 'filer_name', 'recipient_name', 'transferor_name'];
@@ -1831,7 +1793,7 @@ function PagePipeline({ files, results, apiUrl }) {
                 }
                 return null;
             };
-            const extractedName = findName(r.extracted_fields);
+            const extractedName = findName(r.extracted_fields || r.data);
             if (extractedName) clientName = extractedName;
         }
 
@@ -1849,13 +1811,13 @@ function PagePipeline({ files, results, apiUrl }) {
     // Deduplicate: ledger rows take precedence, then live rows not already in ledger
     // Match based on document_id (if available) or name (as fallback)
     const ledgerIds = new Set(ledgerRows.map(r => r.document_id).filter(Boolean));
-    const ledgerNames = new Set(ledgerRows.map(r => normalizeClientName(r.name)));
+    const ledgerNamesNorm = new Set(ledgerRows.map(r => normalizeClientKey(r.name)));
 
     const deduped = [
         ...ledgerRows,
         ...liveRows.filter(r => {
             if (r.document_id && ledgerIds.has(r.document_id)) return false;
-            if (ledgerNames.has(normalizeClientName(r.name))) return false;
+            if (ledgerNamesNorm.has(normalizeClientKey(r.name))) return false;
             return true;
         }),
     ];
@@ -1948,21 +1910,18 @@ function PagePipeline({ files, results, apiUrl }) {
             )}
 
             {view === 'table' && (() => {
-                // Group filtered rows by client name
-                const grouped = filtered.reduce((acc, row) => {
-                    const normalizedKey = normalizeClientName(row.name) || '—';
-                    if (!acc[normalizedKey]) {
-                        acc[normalizedKey] = { displayName: row.name || '—', rows: [] };
+                // Group by normalized key but display the original name from the first row
+                const _groupMap = {};
+                filtered.forEach(row => {
+                    const nk = normalizeClientKey(row.name);
+                    if (!_groupMap[nk]) {
+                        _groupMap[nk] = { displayName: row.name || '—', rows: [] };
                     }
-                    acc[normalizedKey].rows.push(row);
-                    // Prefer non-uppercase names for display when both variants exist.
-                    const current = acc[normalizedKey].displayName || '';
-                    const incoming = row.name || '';
-                    const currentAllCaps = current && current === current.toUpperCase();
-                    const incomingAllCaps = incoming && incoming === incoming.toUpperCase();
-                    if (currentAllCaps && !incomingAllCaps) acc[normalizedKey].displayName = incoming;
-                    return acc;
-                }, {});
+                    _groupMap[nk].rows.push(row);
+                });
+                const grouped = Object.fromEntries(
+                    Object.entries(_groupMap).map(([nk, { displayName, rows }]) => [displayName, rows])
+                );
 
                 // Status priority for dominant status
                 const statusPriority = { exception: 3, processing: 2, approved: 1, pending: 0 };
@@ -1996,14 +1955,15 @@ function PagePipeline({ files, results, apiUrl }) {
                         </tr></thead>
                         <tbody>
                             {clientKeys.length > 0 ? clientKeys.map((clientName) => {
-                                const group = grouped[clientName];
-                                const rows = group.rows;
+                                const rows = grouped[clientName];
                                 const isExpanded = expandedClients.has(clientName);
                                 const hasDB = rows.some(r => r.fromLedger);
+                                const conf = avgConf(rows);
+                                const confCls = conf != null ? (conf >= 90 ? 'high' : conf >= 75 ? 'medium' : 'low') : '';
                                 
-                                // Get client data from map
-                                const client = clientsMap[clientName];
-                                const clientStage = client?.lifecycle_stage || '—';
+                                // Parent status
+                                const parentStatusMap = { rejected: 1, exception: 2, processing: 3, pending: 4, review: 5, approved: 6, filed: 7 };
+                                const parentStatus = rows.map(r => r.status).sort((a,b) => (parentStatusMap[a] || 9) - (parentStatusMap[b] || 9))[0] || '—';
 
                                 return (
                                     <React.Fragment key={clientName}>
@@ -2023,12 +1983,19 @@ function PagePipeline({ files, results, apiUrl }) {
                                                     {rows.length}
                                                 </span>
                                             </td>
-                                            <td style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 500 }}>{clientStage}</td>
-                                            <td>
-                                                <span style={{ color: 'var(--text-muted)' }}>—</span>
+                                            <td style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 500 }}>
+                                                {mostAdvancedStage(rows)}
                                             </td>
                                             <td>
-                                                <span style={{ color: 'var(--text-muted)' }}>—</span>
+                                                {(() => {
+                                                    const c = avgConf(rows);
+                                                    if (c == null) return <span style={{ color: 'var(--text-muted)' }}>—</span>;
+                                                    const cls = c >= 90 ? 'high' : c >= 75 ? 'med' : 'low';
+                                                    return <span className={`confidence-badge ${cls}`}>{c}%</span>;
+                                                })()}
+                                            </td>
+                                            <td>
+                                                <StatusPill status={dominantStatus(rows)} />
                                             </td>
                                         </tr>
 
@@ -2119,17 +2086,248 @@ function ExcCard({ exc, apiUrl, onAccept, onOverride }) {
 // ═══════════════════════════════════════════════════════════════════════════
 // LIVE EXCEPTION CARD — matches Image 1 card grid layout
 // ═══════════════════════════════════════════════════════════════════════════
+/**
+ * Classify an exception as AUTO (AI can fix deterministically) or
+ * MANUAL (correct value does not exist in the system — human must supply it).
+ *
+ * Returns: "AUTO" | "MANUAL"
+ */
+/**
+ * Classify an exception as AUTO (AI can fix deterministically) or
+ * MANUAL (correct value does not exist in the system — human must supply it).
+ *
+ * Built from the complete Taxscio exception taxonomy (90+ exception types
+ * across 15 categories). The rule: AUTO if and only if the correct value
+ * can be computed or derived from data already in the system.
+ *
+ * Returns: "AUTO" | "MANUAL"
+ */
+function classifyException(exc) {
+    const code = (exc.code || exc.exception_id || '').toUpperCase();
+    const severity = (exc.severity || '').toUpperCase();
+
+    // ── RULE 1: proposed_value is the ground truth ────────────────────────
+    // If the backend computed a concrete value to insert, it's AUTO regardless
+    // of the code. If no concrete value exists, Accept AI Suggestion is meaningless.
+    const hasProposedValue = (
+        exc.proposed_value !== null &&
+        exc.proposed_value !== undefined &&
+        exc.proposed_value !== '' &&
+        exc.proposed_value !== 'undefined'
+    ) || (
+        exc.auto_fix_value !== null &&
+        exc.auto_fix_value !== undefined &&
+        exc.auto_fix_value !== '' &&
+        exc.auto_fix_value !== 'undefined'
+    );
+
+    // ── RULE 2: _source from backend classification is authoritative ──────
+    // auto_fixer.py already made this decision. Trust it.
+    // BUT: fixable + no proposed_value = MANUAL (the fixer knew the rule
+    // but couldn't compute the value)
+    if (exc._source === 'fixable') {
+        return hasProposedValue ? 'AUTO' : 'MANUAL';
+    }
+    if (exc._source === 'review') return 'MANUAL';
+
+    // ── RULE 3: CRITICAL severity → always MANUAL ─────────────────────────
+    if (severity === 'CRITICAL') return 'MANUAL';
+
+    // ── RULE 4: Exact code matching against real auto_fixer.py codes ──────
+    const FIXABLE_CODES = new Set([
+        'FLD_ZERO_VS_BLANK',
+        'FLD_DASH_SYMBOL',
+        'FLD_NA_TEXT',
+        'FLD_CHECKBOX_BLANK',
+        'FLD_SPECIAL_CHARS',
+        'LLM_OVER_NORMALIZATION',
+    ]);
+
+    const REVIEW_CODES = new Set([
+        'NUM_NEGATIVE_VALUE',
+        'NUM_DECIMAL_MISPLACE',
+        'NUM_LARGE_OUTLIER',
+        'NUM_WITHHOLDING_GT_INC',
+        'NUM_DUPLICATE_ENTRY',
+        'NUM_SUBTOTAL_MISMATCH',
+        'ID_INVALID_SSN',
+        'ID_INVALID_TIN',
+        'ID_MASKED_SSN',
+        'ID_DUPLICATE_DEP_SSN',
+        'FORM_INVALID_CODE',
+        'FLD_ILLEGIBLE',
+        'FLD_ADDRESS_COLLAPSED',
+    ]);
+
+    if (FIXABLE_CODES.has(code)) return hasProposedValue ? 'AUTO' : 'MANUAL';
+    if (REVIEW_CODES.has(code)) return 'MANUAL';
+
+    // ── RULE 5: proposed_value fallback for unknown codes ─────────────────
+    if (hasProposedValue) return 'AUTO';
+
+    // ── RULE 6: default → MANUAL ──────────────────────────────────────────
+    return 'MANUAL';
+}
+
+/**
+ * Client-side field format validator.
+ * Runs BEFORE /apply-fixes is called.
+ * Returns an error message string on failure, null on pass.
+ */
+function validateFieldInput(field, value) {
+    if (value === null || value === undefined) return null;
+    const v = String(value).trim();
+    const f = (field || '').toLowerCase();
+
+    if (v === '') return null;
+
+    // ── SSN: XXX-XX-XXXX or 9 raw digits ────────────────────────────
+    if (f.includes('ssn') || f === 'employee_ssn' || f === 'recipient_ssn') {
+        const digits = v.replace(/\D/g, '');
+        if (digits.length !== 9) {
+            return 'Enter the SSN in format XXX-XX-XXXX (e.g. 123-45-6789).';
+        }
+        if (/^0{9}$/.test(digits) || /^1{9}$/.test(digits)) {
+            return 'SSN cannot be all the same digit.';
+        }
+        if (digits.startsWith('9')) {
+            return 'SSNs cannot begin with 9 — that is an ITIN format. Use the ITIN field instead.';
+        }
+        return null;
+    }
+
+    // ── ITIN: 9XX-XX-XXXX ───────────────────────────────────────────
+    if (f.includes('itin')) {
+        const digits = v.replace(/\D/g, '');
+        if (digits.length !== 9 || !digits.startsWith('9')) {
+            return 'ITIN must be 9 digits starting with 9 (format: 9XX-XX-XXXX).';
+        }
+        return null;
+    }
+
+    // ── EIN / TIN / Payer TIN: XX-XXXXXXX or 9 raw digits ──────────
+    if (f.includes('ein') || f.includes('payer_tin') || f.includes('employer_id')
+        || f === 'tin' || f.includes('_tin')) {
+        const digits = v.replace(/\D/g, '');
+        if (digits.length !== 9) {
+            return 'Enter the TIN/EIN in format XX-XXXXXXX (e.g. 12-3456789).';
+        }
+        if (/^0{9}$/.test(digits)) {
+            return 'TIN/EIN cannot be all zeros.';
+        }
+        return null;
+    }
+
+    // ── Tax year ─────────────────────────────────────────────────────
+    if (f === 'tax_year' || f.includes('tax_year')) {
+        const yr = parseInt(v, 10);
+        if (isNaN(yr) || String(yr) !== v) {
+            return 'Tax year must be a 4-digit number (e.g. 2025)';
+        }
+        if (yr < 1990 || yr > 2035) {
+            return `Tax year ${yr} is outside the valid range (1990–2035)`;
+        }
+        const currentYear = new Date().getFullYear();
+        if (yr < currentYear - 1) {
+            return `Tax year ${yr} is more than 1 year prior to ${currentYear}. ` +
+                   `If this is an amended return, use Escalate instead.`;
+        }
+        return null;
+    }
+
+    // ── Distribution / box codes ─────────────────────────────────────
+    if (f.endsWith('_code') && (f.includes('distribution') || f.includes('box_7'))) {
+        // IRS 1099-R Box 7 valid distribution codes
+        const VALID_DIST_CODES = new Set([
+            '1','2','3','4','5','6','7','8','9',
+            'A','B','C','D','E','F','G','H','J',
+            'K','L','M','N','P','Q','R','S','T','U','W'
+        ]);
+        if (!VALID_DIST_CODES.has(v.toUpperCase())) {
+            return `'${v}' is not a valid IRS distribution code. ` +
+                   `Valid codes: 1-9, A-H, J-N, P-W (excluding I, O, V, X, Y, Z)`;
+        }
+        return null;
+    }
+
+    // ── Currency / monetary amounts ──────────────────────────────────
+    // Mirrors backend engine.py NUMERIC_FIELD_SUFFIXES exactly.
+    // Suffix matching prevents false positives on distribution_code, date_of_payment, etc.
+    const NUMERIC_FIELD_SUFFIXES = [
+        '_amount', '_income', '_wages', '_tax', '_withheld',
+        '_compensation', '_proceeds', '_gain', '_loss', '_credit',
+        '_payment', '_distribution', '_interest', '_dividends',
+        '_royalties', '_benefits', '_contributions', '_deduction',
+    ];
+    const isCurrency = NUMERIC_FIELD_SUFFIXES.some(suffix => f.endsWith(suffix));
+    if (isCurrency) {
+        const cleaned = v.replace(/[$,\s]/g, '');
+        const num = parseFloat(cleaned);
+        if (isNaN(num)) {
+            return 'Amount must be a number (e.g. 12000.00)';
+        }
+        if (num < 0) {
+            return 'Amount cannot be negative for this field';
+        }
+        if (num > 99_999_999) {
+            return 'Amount exceeds maximum allowed value ($99,999,999)';
+        }
+        return null;
+    }
+
+    // ── Percentages ──────────────────────────────────────────────────
+    if (f.includes('rate') || f.includes('percent') || f.includes('pct')) {
+        const num = parseFloat(v);
+        if (isNaN(num)) return 'Must be a number';
+        if (num < 0 || num > 100) return 'Percentage must be between 0 and 100';
+        return null;
+    }
+
+    // ── ZIP code ─────────────────────────────────────────────────────
+    if (f.includes('zip') || f.includes('postal')) {
+        if (!/^\d{5}(-\d{4})?$/.test(v)) {
+            return 'ZIP code must be 5 digits (e.g. 10022) or 9 digits (e.g. 10022-1234)';
+        }
+        return null;
+    }
+
+    // ── State code ───────────────────────────────────────────────────
+    if (f === 'state' || f.endsWith('_state')) {
+        if (!/^[A-Z]{2}$/.test(v.toUpperCase())) {
+            return 'State must be a 2-letter code (e.g. NY, CA)';
+        }
+        return null;
+    }
+
+    // ── Date fields ──────────────────────────────────────────────────
+    if (f.includes('date') || f.includes('_dob') || f.includes('birth')) {
+        const d = new Date(v);
+        if (isNaN(d.getTime())) {
+            return 'Must be a valid date (e.g. 2025-01-15 or 01/15/2025)';
+        }
+        return null;
+    }
+
+    // No rule matched — pass through to backend
+    return null;
+}
+
 // LIVE EXCEPTION CARD — matches Image 1 card grid layout
 // ═══════════════════════════════════════════════════════════════════════════
-function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}, documentId: documentIdProp }) {
+function LiveExcCard({ exc, formType, filename, apiUrl, documentId: documentIdProp, validationError, isSubmitting, onSubmit, onEscalate }) {
     const [overrideMode, setOverrideMode] = useState(false);
     const [overrideVal, setOverrideVal] = useState('');
-    const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
     const [escalated, setEscalated] = useState(false);
-    const [escalationMeta, setEscalationMeta] = useState(null);
-    const [hidden, setHidden] = useState(false);
     const baseApiUrl = (apiUrl || 'http://localhost:8000').replace(/\/$/, '');
+
+    // Reset input state whenever the exception changes (new card or prop update)
+    useEffect(() => {
+        setOverrideVal('');
+        setError(null);
+        setOverrideMode(false);
+        setEscalated(false);
+    }, [exc.field, exc.code]);
 
     // Normalise severity to high / medium / low
     const rawSev = (exc.severity || '').toUpperCase();
@@ -2141,11 +2339,21 @@ function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}
     const code = (exc.code || exc.exception_id || '');
     const getType = () => {
         const c = code.toUpperCase();
-        if (c.includes('MISMATCH') || c.includes('VARIANCE') || c.includes('GT') || c.includes('LT') || c.includes('NEQ')) return ['⚡', 'Data Mismatch'];
-        if (c.includes('MISSING') || c.includes('ZERO') || c.includes('BLANK') || c.includes('NULL')) return ['📄', 'Missing Field'];
-        if (c.includes('CALC') || c.includes('MATH') || c.includes('SUM')) return ['🔢', 'Calculation Variance'];
-        if (c.includes('IRS') || c.includes('FLAG') || c.includes('RULE') || c.includes('SALT')) return ['🏛', 'IRS Rule Flag'];
-        if (c.includes('YEAR') || c.includes('DATE') || c.includes('PRIOR')) return ['📋', 'Prior Year Conflict'];
+        if (c.startsWith('NUM_')) return ['🔢', 'Calculation Variance'];
+        if (c.startsWith('ID_')) return ['🪪', 'Identity Exception'];
+        if (c.startsWith('FLD_')) return ['📄', 'Missing Field'];
+        if (c.startsWith('OCR_')) return ['🖨️', 'OCR / Format Issue'];
+        if (c.startsWith('LLM_') || c.startsWith('LLMD_')) return ['🤖', 'LLM Exception'];
+        if (c.startsWith('ENG_')) return ['📋', 'Engagement Issue'];
+        if (c.startsWith('CY_')) return ['📅', 'Prior Year Conflict'];
+        if (c.startsWith('XDOC_')) return ['🔗', 'Cross-Document'];
+        if (c.startsWith('SEC_')) return ['🔒', 'Security Flag'];
+        if (c.startsWith('WF_') || c.startsWith('LED_')) return ['⚙️', 'Workflow State'];
+        if (c.startsWith('EMAIL_')) return ['📧', 'Email Source'];
+        if (c.startsWith('MT_')) return ['🏢', 'Multi-Tenant'];
+        if (c.startsWith('DB_')) return ['🗄️', 'Data Schema'];
+        if (c.startsWith('STR_')) return ['🏗️', 'Structural'];
+        if (c.startsWith('CTX_')) return ['⚖️', 'Tax Logic'];
         return ['⚠️', 'Exception'];
     };
     const [typeIcon, typeLabel] = getType();
@@ -2156,94 +2364,51 @@ function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}
         : null;
 
     // Client display prioritize name over filename
-    const clientLabel = docData.client_name || filename.replace(/\.[^/.]+$/, '');
+    const clientLabel = filename.replace(/\.[^/.]+$/, '');
 
-    // The unique key for this exception — used by parent to remove it from results
-    const excKey = `${exc.code || ''}:${exc.field || ''}`;
-
-    const callAPI = async (fixValue) => {
-        setLoading(true);
-        setError(null);
-        try {
-            const body = {
-                form_type: formType,
-                data: docData,
-                fixes: exc.field ? [{ field: exc.field, new_value: fixValue }] : [],
-                pdf_type: 'digital',
-                human_verified_fields: exc.field ? [exc.field] : [],
-                context: {
-                    filename,
-                    document_id: documentIdProp || null,
-                },
-            };
-            const r = await fetch(`${baseApiUrl}/apply-fixes`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-            });
-            const data = await r.json().catch(() => ({}));
-            if (!r.ok) {
-                setError(data?.error || data?.message || `Save failed (${r.status})`);
-                return;
-            }
-            // Remove card only after successful save.
-            setHidden(true);
-            if (onResolved) onResolved(excKey, data);
-        } catch (e) {
-            setError(e?.message || 'Network error');
-        } finally {
-            setLoading(false);
-        }
+    const handleSubmit = (value) => {
+        const val = String(value || '').trim();
+        if (!val) return;
+        onSubmit(exc.field, val);
     };
 
     const handleAccept = () => {
-        const fixVal = exc.proposed_value ?? exc.auto_fix_value ?? exc.current_value ?? '';
-        callAPI(fixVal);
+        const fixVal = exc.proposed_value ?? exc.auto_fix_value;
+        if (fixVal === undefined || fixVal === null || fixVal === '') {
+            setError('No AI-proposed value available — enter a value manually.');
+            return;
+        }
+        handleSubmit(String(fixVal));
     };
 
     const handleOverrideConfirm = () => {
-        if (!overrideVal.trim()) return;
-        callAPI(overrideVal);
+        handleSubmit(overrideVal);
     };
 
     const handleEscalate = async () => {
-        setLoading(true);
-        setError(null);
+        // Remove card immediately — don't wait for API
+        if (onEscalate) onEscalate(exc.code, exc.field);
+
+        // Fire API in background for ledger record
         try {
-            const r = await fetch(`${baseApiUrl}/ledger/escalate-exception`, {
+            const baseUrl = (apiUrl || 'http://localhost:8000').replace(/\/$/, '');
+            await fetch(`${baseUrl}/ledger/escalate-exception`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     document_id: documentIdProp || null,
-                    client_name: clientLabel,
+                    client_name: filename,
                     document_type: formType,
                     exception_code: exc.code,
                     exception_field: exc.field,
-                    severity: exc.severity || rawSev || sevDisplay,
+                    severity: exc.severity || 'WARNING',
                     description: exc.description || exc.message || null,
                     filename,
                 }),
             });
-            const data = await r.json().catch(() => ({}));
-            if (!r.ok) {
-                setError(data.error || data.message || `Escalation failed (${r.status})`);
-                return;
-            }
-            setEscalationMeta({
-                id: data.escalation_id,
-                ledgerLinked: !!data.ledger_linked,
-            });
-            // Treat escalation as "ignore and remove from queue"
-            setHidden(true);
-            if (onResolved) {
-                onResolved(excKey, null);
-                return;
-            }
-            setEscalated(true);
         } catch (e) {
-            setError(e?.message || 'Network error');
-        } finally {
-            setLoading(false);
+            // Silently ignore — card is already removed
+            console.warn('[Escalate] API call failed silently:', e?.message);
         }
     };
 
@@ -2252,8 +2417,6 @@ function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}
         : exc.document_confidence !== undefined ? Math.round(exc.document_confidence * 100)
             : null;
     const confCls = confPct === null ? '' : confPct >= 90 ? 'high' : confPct >= 70 ? 'med' : 'low';
-
-    if (hidden) return null;
 
     return (
         <div className="exception-card">
@@ -2282,68 +2445,163 @@ function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}
                 )}
             </div>
 
+            {classifyException(exc) === 'AUTO' && !overrideMode && !escalated && (
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                    <button
+                        type="button"
+                        style={{ background: 'none', border: 'none', cursor: 'pointer',
+                                 color: 'var(--text-muted)', fontSize: 11, padding: 0,
+                                 textDecoration: 'underline' }}
+                        onClick={() => setOverrideMode(true)}
+                    >
+                        Enter different value instead
+                    </button>
+                </div>
+            )}
+
             {error && (
                 <div style={{ fontSize: 11, color: 'var(--red)', marginBottom: 8 }}>{error}</div>
             )}
 
-            {escalated && escalationMeta && (
-                <div
-                    style={{
-                        fontSize: 12,
-                        color: 'var(--text-secondary)',
-                        marginBottom: 10,
-                        padding: '10px 12px',
-                        background: 'rgba(99, 102, 241, 0.08)',
-                        border: '1px solid var(--border)',
-                        borderRadius: 'var(--radius)',
-                    }}
-                >
-                    <strong style={{ color: 'var(--text-primary)' }}>Escalated.</strong>{' '}
-                    Recorded on the server (escalation #{escalationMeta.id}).
-                    {escalationMeta.ledgerLinked
-                        ? ' Linked to your filing pipeline ledger.'
-                        : ' No matching ledger row for this client/form — escalation is still stored.'}
-                </div>
+            {validationError && (
+                <div style={{ fontSize: 11, color: 'var(--red)', marginBottom: 6 }}>✗ {validationError}</div>
             )}
 
-            {!overrideMode ? (
-                <div className="exception-actions">
-                    <button type="button" className="btn btn-success" onClick={handleAccept} disabled={loading || escalated}>
-                        {loading ? 'Applying…' : 'Accept AI Suggestion'}
-                    </button>
-                    <button type="button" className="btn btn-secondary" onClick={() => setOverrideMode(true)} disabled={loading || escalated}>
-                        Override
-                    </button>
-                    <button
-                        type="button"
-                        className="btn btn-danger"
-                        disabled={loading || escalated}
-                        onClick={handleEscalate}
-                    >
-                        {loading ? 'Sending…' : escalated ? 'Escalated' : 'Escalate'}
-                    </button>
-                </div>
-            ) : (
-                <div className="exception-actions" style={{ flexDirection: 'column', gap: 8 }}>
-                    <input
-                        type="text"
-                        style={{ width: '100%', padding: '8px 12px', fontSize: 13, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', outline: 'none', background: 'var(--surface-1)' }}
-                        placeholder={`Enter corrected value for ${fieldLabel || 'this field'}…`}
-                        value={overrideVal}
-                        onChange={e => setOverrideVal(e.target.value)}
-                        onKeyDown={e => e.key === 'Enter' && handleOverrideConfirm()}
-                        autoFocus
-                    />
-                    <div style={{ display: 'flex', gap: 8 }}>
-                        <button className="btn btn-success" onClick={handleOverrideConfirm} disabled={loading || !overrideVal.trim()}>
-                            {loading ? 'Saving…' : 'Confirm Override'}
-                        </button>
-                        <button className="btn btn-secondary" onClick={() => { setOverrideMode(false); setOverrideVal(''); }}>
-                            Cancel
-                        </button>
+            {(() => {
+                const excType = classifyException(exc);
+
+                if (excType === 'AUTO' && !overrideMode) {
+                    const proposedVal = exc.proposed_value ?? exc.auto_fix_value;
+                    const proposedDisplay = proposedVal !== null && proposedVal !== undefined
+                        ? String(proposedVal)
+                        : null;
+
+                    return (
+                        <div className="exception-actions">
+                            <button
+                                type="button"
+                                className="btn btn-success"
+                                onClick={handleAccept}
+                                disabled={isSubmitting || escalated}
+                                title={proposedDisplay
+                                    ? `AI fix: set ${exc.field} → ${proposedDisplay}`
+                                    : 'Apply AI suggestion'}
+                            >
+                                {isSubmitting ? 'Applying…' : `Accept AI Suggestion${proposedDisplay ? ` (→ ${proposedDisplay})` : ''}`}
+                            </button>
+                            <button
+                                type="button"
+                                className="btn btn-danger"
+                                onClick={handleEscalate}
+                                disabled={escalated}
+                            >
+                                Escalate
+                            </button>
+                        </div>
+                    );
+                }
+
+                if (excType === 'MANUAL' && !overrideMode) {
+                    const hint = exc.edit_hint
+                        || `Enter correct value for ${(exc.field || '').replace(/_/g, ' ')}…`;
+
+                    return (
+                        <div className="exception-actions" style={{ flexDirection: 'column', gap: 8 }}>
+                            <div style={{
+                                fontSize: 11,
+                                color: 'var(--amber)',
+                                background: 'rgba(217,119,6,.08)',
+                                border: '1px solid rgba(217,119,6,.2)',
+                                borderRadius: 4,
+                                padding: '6px 10px',
+                                lineHeight: 1.5,
+                            }}>
+                                ✎ Human input required — AI cannot determine the correct value for this field.
+                            </div>
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                <input
+                                    type="text"
+                                    style={{
+                                        flex: 1,
+                                        padding: '8px 12px',
+                                        fontSize: 13,
+                                        border: `1px solid ${validationError ? 'var(--red)' : 'var(--border)'}`,
+                                        borderRadius: 'var(--radius-sm)',
+                                        outline: 'none',
+                                        background: 'var(--surface-1)',
+                                    }}
+                                    placeholder={hint}
+                                    value={overrideVal}
+                                    onChange={e => setOverrideVal(e.target.value)}
+                                    onKeyDown={e => e.key === 'Enter' && overrideVal.trim() && handleOverrideConfirm()}
+                                    autoFocus
+                                />
+                                <button
+                                    className="btn btn-success"
+                                    onClick={handleOverrideConfirm}
+                                    disabled={isSubmitting || !overrideVal.trim()}
+                                >
+                                    {isSubmitting ? 'Validating…' : 'Submit'}
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn btn-danger"
+                                    onClick={handleEscalate}
+                                    disabled={escalated}
+                                >
+                                    Escalate
+                                </button>
+                            </div>
+                        </div>
+                    );
+                }
+
+                // AUTO in override mode
+                return (
+                    <div className="exception-actions" style={{ flexDirection: 'column', gap: 8 }}>
+                        <input
+                            type="text"
+                            style={{
+                                width: '100%',
+                                padding: '8px 12px',
+                                fontSize: 13,
+                                border: `1px solid ${validationError ? 'var(--red)' : 'var(--border)'}`,
+                                borderRadius: 'var(--radius-sm)',
+                                outline: 'none',
+                                background: 'var(--surface-1)',
+                            }}
+                            placeholder={`Enter corrected value for ${fieldLabel || 'this field'}…`}
+                            value={overrideVal}
+                            onChange={e => setOverrideVal(e.target.value)}
+                            onKeyDown={e => e.key === 'Enter' && handleOverrideConfirm()}
+                            autoFocus
+                        />
+                        <div style={{ display: 'flex', gap: 8 }}>
+                            <button
+                                className="btn btn-success"
+                                onClick={handleOverrideConfirm}
+                                disabled={isSubmitting || !overrideVal.trim()}
+                            >
+                                {isSubmitting ? 'Validating…' : 'Confirm Override'}
+                            </button>
+                            <button
+                                className="btn btn-secondary"
+                                onClick={() => { setOverrideMode(false); setOverrideVal(''); }}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                className="btn btn-danger"
+                                onClick={handleEscalate}
+                                disabled={escalated}
+                            >
+                                Escalate
+                            </button>
+                        </div>
                     </div>
-                </div>
-            )}
+                );
+            })()}
         </div>
     );
 }
@@ -2352,38 +2610,231 @@ function LiveExcCard({ exc, formType, filename, apiUrl, onResolved, docData = {}
 // PAGE: EXCEPTIONS  — card grid layout (matches Image 1)
 // ═══════════════════════════════════════════════════════════════════════════
 function PageExceptions({ files, results, apiUrl, setResults }) {
-    const [filterSev, setFilterSev] = useState('All Types');
     const [filterType, setFilterType] = useState('All Types');
 
-    // Flatten all exceptions from all completed files into a single list
-    const allCards = [];
-    files.filter(f => f.status === 'completed').forEach(f => {
-        const r = results[f.file.name] || {};
-        const formType = f.form_type || r.form_type || '—';
-        const filename = f.file.name;
-
-        const push = (exc) => allCards.push({ exc, formType, filename, result: r });
-
-        // Collect from all three arrays — deduplicate by code+field
-        const seen = new Set();
-        const dedup = (arr) => (arr || []).forEach(exc => {
-            const key = `${exc.code}:${exc.field}`;
-            if (!seen.has(key)) { seen.add(key); push(exc); }
+    // patchedData[filename] = full form data dict for that file, updated after every /apply-fixes
+    const [patchedData, setPatchedData] = useState(() => {
+        const initial = {};
+        files.filter(f => f.status === 'completed').forEach(f => {
+            const r = results[f.file.name] || {};
+            const candidate =
+                r.extracted_fields ||
+                r.data ||
+                r.raw_normalized_json ||
+                r.formatted_json ||
+                {};
+            const isNested = Object.values(candidate).some(
+                v => v !== null && typeof v === 'object' && !Array.isArray(v)
+            );
+            if (isNested) {
+                const flat = {};
+                for (const [k, v] of Object.entries(candidate)) {
+                    if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+                        Object.assign(flat, v);
+                    } else {
+                        flat[k] = v;
+                    }
+                }
+                initial[f.file.name] = flat;
+            } else {
+                initial[f.file.name] = { ...candidate };
+            }
         });
-
-        dedup(r.exceptions);
-        dedup(r.fixable_exceptions);
-        dedup(r.review_exceptions);
+        return initial;
     });
 
-    // Stats
+    // liveExceptions[filename] = current exception list, replaced wholesale after every /apply-fixes
+    const [liveExceptions, setLiveExceptions] = useState(() => {
+        const initial = {};
+        files.filter(f => f.status === 'completed').forEach(f => {
+            const r = results[f.file.name] || {};
+            const seen = new Set();
+            const deduped = [];
+            const dedup = (arr, source) => (arr || []).forEach(exc => {
+                const key = `${exc.code || ''}:${exc.field || ''}`;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    deduped.push({ ...exc, _source: source });
+                }
+            });
+            dedup(r.fixable_exceptions, 'fixable');
+            dedup(r.review_exceptions,  'review');
+            dedup(r.exceptions,         'exceptions');
+            initial[f.file.name] = deduped;
+        });
+        return initial;
+    });
+
+    // submitting[filename] = true while /apply-fixes is in flight for that file
+    const [submitting, setSubmitting] = useState({});
+
+    // fieldErrors[filename][field] = inline error string for that card
+    const [fieldErrors, setFieldErrors] = useState({});
+
+    const handleCardSubmit = async (filename, field, value, formType) => {
+        // Client-side format validation before any network call
+        const formatError = validateFieldInput(field, value);
+        if (formatError) {
+            setFieldErrors(prev => ({
+                ...prev,
+                [filename]: { ...(prev[filename] || {}), [field]: formatError }
+            }));
+            return;
+        }
+
+        setSubmitting(prev => ({ ...prev, [filename]: true }));
+        setFieldErrors(prev => ({
+            ...prev,
+            [filename]: { ...(prev[filename] || {}), [field]: null }
+        }));
+
+        try {
+            const currentData = patchedData[filename] || {};
+            const newPatchedData = { ...currentData, [field]: value };
+            const baseUrl = (apiUrl || 'http://localhost:8000').replace(/\/$/, '');
+
+            // Step 1: validate — pass fixes so the backend applies the CPA's value
+            // to the correct extracted-data key (e.g. box_7_distribution_code) via
+            // _patch_nested before running the engine. No frontend key-guessing needed.
+            const vRes = await fetch(`${baseUrl}/validate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    form_type: formType,
+                    data: newPatchedData,
+                    fixes: [{ field, new_value: value }],
+                    pdf_type: 'digital',
+                }),
+            });
+            if (vRes.ok) {
+                const vData = await vRes.json().catch(() => ({}));
+                const allVExc = [
+                    ...(vData.fixable_exceptions || []),
+                    ...(vData.review_exceptions  || []),
+                    ...(vData.exceptions         || []),
+                ];
+                const fLow = (field || '').toLowerCase();
+                const failing = allVExc.find(e => (e.field || '').toLowerCase() === fLow);
+                if (failing) {
+                    const reason = failing.description || failing.edit_hint || failing.code || 'Value did not pass IRS validation rules';
+                    setFieldErrors(prev => ({ ...prev, [filename]: { ...(prev[filename] || {}), [field]: reason } }));
+                    setSubmitting(prev => ({ ...prev, [filename]: false }));
+                    return;
+                }
+            }
+
+            // Step 2: passed — write permanently
+            const body = {
+                form_type: formType,
+                data: newPatchedData,
+                fixes: [{ field, new_value: value }],
+                pdf_type: 'digital',
+                human_verified_fields: [field],
+                context: { filename },
+            };
+
+            const r = await fetch(`${baseUrl}/apply-fixes`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+
+            const data = await r.json().catch(() => ({}));
+
+            if (!r.ok) {
+                setFieldErrors(prev => ({
+                    ...prev,
+                    [filename]: {
+                        ...(prev[filename] || {}),
+                        [field]: data?.error || data?.message || `Save failed (${r.status})`
+                    }
+                }));
+                return;
+            }
+
+            // Update patchedData with the confirmed value
+            setPatchedData(prev => ({
+                ...prev,
+                [filename]: { ...(prev[filename] || {}), [field]: value }
+            }));
+
+            // Build new exception list from response (deduplicated, classified first)
+            const seen = new Set();
+            const newExceptions = [];
+            const dedup = (arr, source) => (arr || []).forEach(exc => {
+                const key = `${exc.code || ''}:${exc.field || ''}`;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    newExceptions.push({ ...exc, _source: source });
+                }
+            });
+            dedup(data.fixable_exceptions, 'fixable');
+            dedup(data.review_exceptions,  'review');
+            dedup(data.exceptions,         'exceptions');
+
+            // Replace this file's exception list wholesale
+            setLiveExceptions(prev => ({ ...prev, [filename]: newExceptions }));
+
+            // Keep parent results in sync
+            if (setResults) {
+                setResults(prev => ({
+                    ...prev,
+                    [filename]: { ...(prev[filename] || {}), ...data }
+                }));
+            }
+
+            // Check if this field still has an exception — if yes, show inline error
+            const fieldLower = (field || '').toLowerCase();
+            const stillFailing = newExceptions.find(e =>
+                (e.field || '').toLowerCase() === fieldLower
+            );
+            if (stillFailing) {
+                const reason = stillFailing.description
+                    || stillFailing.edit_hint
+                    || stillFailing.code
+                    || 'Value did not pass IRS validation rules';
+                setFieldErrors(prev => ({
+                    ...prev,
+                    [filename]: { ...(prev[filename] || {}), [field]: reason }
+                }));
+            } else {
+                setFieldErrors(prev => ({
+                    ...prev,
+                    [filename]: { ...(prev[filename] || {}), [field]: null }
+                }));
+            }
+
+        } catch (e) {
+            setFieldErrors(prev => ({
+                ...prev,
+                [filename]: {
+                    ...(prev[filename] || {}),
+                    [field]: e?.message || 'Network error'
+                }
+            }));
+        } finally {
+            setSubmitting(prev => ({ ...prev, [filename]: false }));
+        }
+    };
+
+    // Build cards from liveExceptions (ground truth after every submit)
+    const allCards = [];
+    files.filter(f => f.status === 'completed').forEach(f => {
+        const filename = f.file.name;
+        const r = results[filename] || {};
+        const formType = f.form_type || r.form_type || '—';
+        const exceptions = liveExceptions[filename] || [];
+        exceptions.forEach(exc => {
+            allCards.push({ exc, formType, filename, result: r });
+        });
+    });
+
+    // Stats — driven by allCards (always accurate)
     const totalExc = allCards.length;
     const affectedForms = new Set(allCards.map(c => c.filename)).size;
     const allConfs = Object.values(results).filter(r => r?.document_confidence).map(r => r.document_confidence);
     const avgConf = allConfs.length ? Math.round(allConfs.reduce((s, v) => s + v, 0) / allConfs.length * 100) : null;
 
-    // Severity filter
-    const sevFilterMap = { 'All Types': null, 'Data Mismatch': 'mismatch', 'Missing Doc': 'missing', 'Calculation': 'calc', 'IRS Flag': 'irs' };
     const filterCards = (card) => {
         if (filterType === 'All Types') return true;
         const code = (card.exc.code || '').toUpperCase();
@@ -2455,44 +2906,28 @@ function PageExceptions({ files, results, apiUrl, setResults }) {
                         </div>
                     )}
                     <div className="exception-grid" id="exception-grid-container">
-                        {visible.map((card, i) => (
+                        {visible.map((card) => (
                             <LiveExcCard
-                                key={`${card.filename}-${card.exc.code}-${card.exc.field}-${i}`}
+                                key={`${card.filename}-${card.exc.code || 'nocode'}-${card.exc.field || 'nofield'}`}
                                 exc={card.exc}
                                 formType={card.formType}
                                 filename={card.filename}
                                 apiUrl={apiUrl}
                                 documentId={card.result?.document_id}
-                                docData={card.result.extracted_fields || card.result.data || {}}
-                                onResolved={(excKey, apiData) => {
-                                    if (!setResults) return;
-                                    setResults(prev => {
-                                        const fileResult = prev[card.filename];
-                                        if (!fileResult) return prev;
-
-                                        // If the API returned a fresh exceptions list, use it directly
-                                        if (apiData && Array.isArray(apiData.exceptions)) {
-                                            return {
-                                                ...prev,
-                                                [card.filename]: { ...fileResult, ...apiData },
-                                            };
-                                        }
-
-                                        // Otherwise remove this exception by code:field key from all three arrays
-                                        const removeByKey = (arr) =>
-                                            (arr || []).filter(e => `${e.code || ''}:${e.field || ''}` !== excKey);
-
-                                        return {
-                                            ...prev,
-                                            [card.filename]: {
-                                                ...fileResult,
-                                                exceptions: removeByKey(fileResult.exceptions),
-                                                fixable_exceptions: removeByKey(fileResult.fixable_exceptions),
-                                                review_exceptions: removeByKey(fileResult.review_exceptions),
-                                                ...(apiData && typeof apiData === 'object' ? apiData : {}),
-                                            },
-                                        };
-                                    });
+                                validationError={fieldErrors[card.filename]?.[card.exc.field] || null}
+                                isSubmitting={!!submitting[card.filename]}
+                                onSubmit={(field, value) =>
+                                    handleCardSubmit(card.filename, field, value, card.formType)
+                                }
+                                onEscalate={(code, field) => {
+                                    setLiveExceptions(prev => ({
+                                        ...prev,
+                                        [card.filename]: (prev[card.filename] || []).filter(e => {
+                                            const eKey = `${e.code || ''}:${e.field || ''}`;
+                                            const target = `${code || ''}:${field || ''}`;
+                                            return eKey !== target;
+                                        })
+                                    }));
                                 }}
                             />
                         ))}
@@ -2715,55 +3150,79 @@ function PageIngestion({
     });
 
     const handleApproveAll = async () => {
-        if (!activeResult || !sessionId) return;
+        if (!activeResult) return;
         setApproving(true);
+        const formType = activeResult.form_type || activeIngestionFile;
         const fields = activeResult.extracted_fields || activeResult.data || {};
-        const corrections = Object.keys(flattenObject(fields)).map(k => ({ field: k, value: String(flattenObject(fields)[k] ?? '') }));
+        const flat = flattenObject(fields);
+        const fixes = Object.entries(flat).map(([field, val]) => ({
+            field,
+            new_value: val,
+        }));
+        const humanVerifiedFields = Object.keys(flat);
         try {
-            const res = await fetch(`${apiUrl}/api/correct`, {
-                method: 'POST', credentials: 'include',
-                headers: { 'Content-Type': 'application/json', 'X-Session-ID': sessionId },
-                body: JSON.stringify({ corrections, human_verified_fields: Object.keys(flattenObject(fields)) }),
+            const res = await fetch(`${apiUrl}/apply-fixes`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    form_type: formType,
+                    data: fields,
+                    fixes,
+                    pdf_type: activeResult.pdf_type || 'digital',
+                    human_verified_fields: humanVerifiedFields,
+                }),
             });
             if (res.ok) {
                 const updated = await res.json();
-                const resultData = updated.data && updated.ok ? updated.data : updated;
                 setResults(prev => ({
                     ...prev,
                     [activeIngestionFile]: {
                         ...prev[activeIngestionFile],
-                        ...resultData,
-                        extracted_fields: resultData.extracted_fields || resultData.data || prev[activeIngestionFile].extracted_fields
-                    }
+                        ...updated,
+                        validation_complete: true,
+                    },
                 }));
             }
-        } catch { }
+        } catch (e) {
+            console.error('handleApproveAll failed:', e);
+        }
         setApproving(false);
     };
 
     const handleSaveEdits = async () => {
-        if (!sessionId || !Object.keys(editedFields).length) return;
-        const corrections = Object.entries(editedFields).map(([field, value]) => ({ field, value }));
+        if (!activeIngestionFile || !Object.keys(editedFields).length) return;
+        const formType = (activeResult?.form_type) || activeIngestionFile;
+        const fields   = activeResult?.extracted_fields || activeResult?.data || {};
+        const fixes = Object.entries(editedFields).map(([field, val]) => ({
+            field,
+            new_value: val,
+        }));
         try {
-            await fetch(`${apiUrl}/api/correct`, {
-                method: 'POST', credentials: 'include',
-                headers: { 'Content-Type': 'application/json', 'X-Session-ID': sessionId },
-                body: JSON.stringify({ corrections, human_verified_fields: Object.keys(editedFields) }),
+            const res = await fetch(`${apiUrl}/apply-fixes`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    form_type: formType,
+                    data: fields,
+                    fixes,
+                    pdf_type: activeResult?.pdf_type || 'digital',
+                    human_verified_fields: Object.keys(editedFields),
+                    context: { filename: activeIngestionFile },
+                }),
             });
-            if (activeResult && setResults) {
-                const nr = JSON.parse(JSON.stringify(results));
-                corrections.forEach(({ field, value }) => {
-                    if (nr[activeIngestionFile]) {
-                        const flat = nr[activeIngestionFile].data || {};
-                        const keys = field.split('.');
-                        let cur = flat;
-                        for (let i = 0; i < keys.length - 1; i++) { if (cur[keys[i]]) cur = cur[keys[i]]; }
-                        cur[keys[keys.length - 1]] = value;
-                    }
-                });
-                setResults(nr);
+            if (res.ok) {
+                const updated = await res.json();
+                setResults(prev => ({
+                    ...prev,
+                    [activeIngestionFile]: {
+                        ...prev[activeIngestionFile],
+                        ...updated,
+                    },
+                }));
             }
-        } catch { }
+        } catch (e) {
+            console.error('handleSaveEdits failed:', e);
+        }
         setEditMode(false);
         setEditedFields({});
     };
@@ -3013,13 +3472,68 @@ function PageAIRules() {
 // ═══════════════════════════════════════════════════════════════════════════
 // PAGE: REPORTS
 // ═══════════════════════════════════════════════════════════════════════════
-function PageReports({ apiUrl, sessionId }) {
-    const handleExport = async () => {
-        if (!sessionId) return alert('No active session. Upload a document first.');
-        try {
-            const r = await fetch(`${apiUrl}/api/export`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', 'X-Session-ID': sessionId }, body: JSON.stringify({ format: 'json' }) });
-            if (r.ok) { const b = await r.blob(); const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(b), download: 'taxscio_export.json' }); a.click(); URL.revokeObjectURL(a.href); }
-        } catch { }
+function PageReports({ apiUrl, sessionId, results }) {
+    const handleExport = async (format = 'json') => {
+        const sid = sessionId;
+        if (sid) {
+            try {
+                const r = await fetch(`${apiUrl}/api/export`, {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json', 'X-Session-ID': sid },
+                    body: JSON.stringify({ format }),
+                });
+                if (r.ok) {
+                    const b = await r.blob();
+                    const cd = r.headers.get('Content-Disposition');
+                    const name = (cd && cd.split('filename=')[1]) || `export.${format}`;
+                    const a = Object.assign(document.createElement('a'), {
+                        href: URL.createObjectURL(b),
+                        download: name,
+                    });
+                    a.click();
+                    URL.revokeObjectURL(a.href);
+                    return;
+                }
+            } catch { /* fall through to client-side export */ }
+        }
+
+        if (!results || !Object.keys(results).length) {
+            alert('No extracted data to export. Upload and process a document first.');
+            return;
+        }
+        const exportData = {
+            exported_at: new Date().toISOString(),
+            documents: Object.entries(results).map(([filename, r]) => ({
+                filename,
+                form_type: r?.form_type,
+                data: r?.extracted_fields || r?.data || {},
+                exceptions_count: (r?.exceptions?.length || 0) + (r?.fixable_exceptions?.length || 0),
+            })),
+        };
+
+        if (format === 'csv') {
+            const first = exportData.documents[0];
+            if (!first) return;
+            const flat = Object.entries(first.data || {});
+            const csv = ['field,value', ...flat.map(([k, v]) => `${k},${String(v ?? '')}`)].join('\n');
+            const b = new Blob([csv], { type: 'text/csv' });
+            const a = Object.assign(document.createElement('a'), {
+                href: URL.createObjectURL(b),
+                download: `taxscio_export.csv`,
+            });
+            a.click();
+            URL.revokeObjectURL(a.href);
+        } else {
+            const json = JSON.stringify(exportData, null, 2);
+            const b = new Blob([json], { type: 'application/json' });
+            const a = Object.assign(document.createElement('a'), {
+                href: URL.createObjectURL(b),
+                download: `taxscio_export.json`,
+            });
+            a.click();
+            URL.revokeObjectURL(a.href);
+        }
     };
     const reports = [
         ['📊', 'Filing Summary Report', 'Overview of all filings: completed, in-progress, pending. Includes refund/balance totals and form type breakdown.'],
@@ -3510,7 +4024,7 @@ function ProfileDropdown({ open, onClose, onNavigate }) {
 // ═══════════════════════════════════════════════════════════════════════════
 export default function App() {
     const isDev = import.meta.env.DEV;
-    const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+    const apiUrl = import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace(/\/$/, '') : '';
 
     // ── Layout state ──────────────────────────────────────────────────────
     const [currentPage, setCurrentPage] = useState('dashboard');
@@ -3657,30 +4171,6 @@ export default function App() {
                     if (!r2.ok) throw { status: r2.status, ...(await r2.json()) };
                     const d2 = await r2.json();
 
-                    // Resolve and pin a client match so validation and ledger records stay client-specific.
-                    const identity = extractClientIdentity(d2.data);
-                    let matchedClient = null;
-                    if (identity?.name || identity?.tin) {
-                        try {
-                            const clientsRes = await fetch(`${apiUrl}/clients?limit=500`);
-                            if (clientsRes.ok) {
-                                const allClients = await clientsRes.json();
-                                matchedClient = allClients.find(c => {
-                                    const fullName = c.entity_type === 'INDIVIDUAL'
-                                        ? `${c.first_name || ''} ${c.last_name || ''}`.trim()
-                                        : c.business_name || c.trust_name || '';
-                                    return (identity.name && fullName.toLowerCase() === identity.name.toLowerCase())
-                                        || (identity.tin && c.tax_id === identity.tin);
-                                }) || null;
-                            }
-                        } catch { /* silently skip if client DB unavailable */ }
-                    }
-                    const matchedClientName = matchedClient
-                        ? (matchedClient.entity_type === 'INDIVIDUAL'
-                            ? `${matchedClient.first_name || ''} ${matchedClient.last_name || ''}`.trim()
-                            : matchedClient.business_name || matchedClient.trust_name || '')
-                        : null;
-
                     // Mark completed immediately so UI updates
                     cur[i].status = 'completed';
                     setFiles([...cur]);
@@ -3693,22 +4183,11 @@ export default function App() {
                         const r3 = await fetch(`${apiUrl}/validate`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                form_type: formType,
-                                pdf_type: d2.pdf_type,
-                                data: d2.data,
-                                filename: item.file.name,
-                                context: matchedClientName ? { client_name: matchedClientName, client_id: matchedClient.id } : {},
-                            }),
+                            body: JSON.stringify({ form_type: formType, pdf_type: d2.pdf_type, data: d2.data, filename: item.file.name }),
                         });
                         if (r3.ok) {
                             const d3 = await r3.json();
-                            finalData = {
-                                ...finalData,
-                                ...d3,
-                                validation_complete: true,
-                                assigned_client_name: matchedClientName || null,
-                            };
+                            finalData = { ...finalData, ...d3, validation_complete: true };
                         }
                     } catch { /* validation failed, still show extraction data */ }
 
@@ -3716,8 +4195,22 @@ export default function App() {
                     setResults(prev => ({ ...prev, [item.file.name]: finalData }));
 
                     // Client auto-match: identify client from extracted fields
+                    const identity = extractClientIdentity(finalData.data);
                     if (identity?.name || identity?.tin) {
-                        setClientMatchModal({ fileName: item.file.name, formType, identity, match: matchedClient || null });
+                        try {
+                            const clientsRes = await fetch(`${apiUrl}/clients?limit=500`);
+                            if (clientsRes.ok) {
+                                const allClients = await clientsRes.json();
+                                const match = allClients.find(c => {
+                                    const fullName = c.entity_type === 'INDIVIDUAL'
+                                        ? `${c.first_name || ''} ${c.last_name || ''}`.trim()
+                                        : c.business_name || c.trust_name || '';
+                                    return (identity.name && fullName.toLowerCase() === identity.name.toLowerCase())
+                                        || (identity.tin && c.tax_id === identity.tin);
+                                });
+                                setClientMatchModal({ fileName: item.file.name, formType, identity, match: match || null });
+                            }
+                        } catch { /* silently skip if client DB unavailable */ }
                     }
 
                 } catch (err) {
@@ -3758,13 +4251,11 @@ export default function App() {
 
     // Export
     const handleExport = useCallback(async (format = 'json') => {
-        const sid = getSessionId();
-        if (!sid) return;
         try {
-            const r = await fetch(`${apiUrl}/api/export`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', 'X-Session-ID': sid }, body: JSON.stringify({ format }) });
+            const r = await fetch(`${apiUrl}/ledger/export?format=${format}`, { method: 'GET' });
             if (r.ok) { const b = await r.blob(); const cd = r.headers.get('Content-Disposition'); const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(b), download: (cd && cd.split('filename=')[1]) || `export.${format}` }); a.click(); URL.revokeObjectURL(a.href); }
         } catch { }
-    }, [getSessionId, apiUrl]);
+    }, [apiUrl]);
 
     // Document drop for Documents page
     const handleDocDrop = useCallback((fileList) => {
@@ -3962,7 +4453,7 @@ export default function App() {
                         />
                     )}
                     {currentPage === 'airules' && <PageAIRules />}
-                    {currentPage === 'reports' && <PageReports apiUrl={apiUrl} sessionId={getSessionId()} />}
+                    {currentPage === 'reports' && <PageReports apiUrl={apiUrl} sessionId={getSessionId()} results={results} />}
                     {currentPage === 'identity' && <PageIdentity />}
                     {currentPage === 'integrations' && <PageIntegrations />}
                     {currentPage === 'organization' && <PageOrganization />}

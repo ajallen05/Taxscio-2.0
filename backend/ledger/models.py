@@ -5,7 +5,6 @@ class Ledger(Base):
     __tablename__ = "ledger"
     id = Column(Integer, primary_key=True)
     document_id = Column(String, unique=True)
-    client_id = Column(String)
     client_name = Column(String)
     document_type = Column(String)
     provider = Column(String)
@@ -21,7 +20,6 @@ class Ledger(Base):
     cpa = Column(String)
     due_date = Column(String)
     confidence_score = Column(Float)
-    local_json_path = Column(String)
 
 
 class DocumentLog(Base):
@@ -31,7 +29,6 @@ class DocumentLog(Base):
     version = Column(Integer)
     upload_count = Column(Integer, default=1)
     content_hash = Column(String)
-    client_id = Column(String)
     client_name = Column(String)
     document_type = Column(String)
     provider = Column(String)
@@ -43,4 +40,3 @@ class DocumentLog(Base):
     cpa = Column(String)
     due_date = Column(String)
     confidence_score = Column(Float)
-    local_json_path = Column(String)

@@ -37,7 +37,7 @@ _REMOTE_URL = os.environ.get("EXPORT_FORMATTER_URL", "http://localhost:8002").rs
 _SERVICE_TOKEN = os.environ.get("EXPORT_FORMATTER_SERVICE_TOKEN", "")
 _TIMEOUT_SECONDS = float(os.environ.get("EXPORT_FORMATTER_TIMEOUT", "10"))
 _GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")
-_GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+_GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 _GEMINI_TIMEOUT_SECONDS = float(os.environ.get("GEMINI_TIMEOUT", "15"))
 
 

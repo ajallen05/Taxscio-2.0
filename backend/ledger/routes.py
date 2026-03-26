@@ -3,13 +3,7 @@ from pydantic import ValidationError
 from .database import SessionLocal
 from .models import Ledger
 from .schemas import DocumentCreate
-from .services import create_document, record_exception_escalation, sync_client_ids, update_status
-
-# Import client_database SessionLocal for client_id lookups
-try:
-    from backend.client_database.database import SessionLocal as ClientSessionLocal
-except ImportError:
-    ClientSessionLocal = None
+from .services import create_document, record_exception_escalation, update_status
 
 ledger_bp = Blueprint("ledger", __name__)
 
@@ -24,20 +18,14 @@ def submit_document():
         return jsonify({"error": "Validation Error", "details": e.errors()}), 400
         
     db = SessionLocal()
-    client_db = ClientSessionLocal() if ClientSessionLocal else None
     try:
-        doc_id = create_document(db, data, client_db=client_db)
+        doc_id = create_document(db, data)
         return jsonify({"document_id": doc_id})
-    except ValueError as e:
-        db.rollback()
-        return jsonify({"error": str(e)}), 422
     except Exception as e:
         db.rollback()
         return jsonify({"error": str(e)}), 500
     finally:
         db.close()
-        if client_db:
-            client_db.close()
 
 @ledger_bp.route("/extracted/<document_id>", methods=["PATCH"])
 def extracted_doc(document_id):
@@ -114,7 +102,6 @@ def get_ledger():
         for l in ledgers:
             result.append({
                 "document_id": l.document_id,
-                "client_id": l.client_id,
                 "client_name": l.client_name,
                 "document_type": l.document_type,
                 "provider": l.provider,
@@ -128,7 +115,6 @@ def get_ledger():
                 "cpa": l.cpa,
                 "due_date": l.due_date,
                 "confidence_score": l.confidence_score,
-                "local_json_path": l.local_json_path,
                 "audit_trail": l.audit_trail or [],
             })
         return jsonify(result)
@@ -137,22 +123,39 @@ def get_ledger():
     finally:
         db.close()
 
-
-@ledger_bp.route("/sync-client-ids", methods=["POST"])
-def sync_ledger_client_ids():
+@ledger_bp.route("/export", methods=["GET"])
+def export_ledger():
     if not SessionLocal:
-        return jsonify({"error": "Ledger database not configured"}), 500
-    if not ClientSessionLocal:
-        return jsonify({"error": "Client database not configured"}), 500
-
+        from flask import jsonify
+        return jsonify({"error": "Database not configured"}), 500
+    format_type = request.args.get("format", "json")
     db = SessionLocal()
-    client_db = ClientSessionLocal()
     try:
-        result = sync_client_ids(db, client_db)
-        return jsonify({"ok": True, **result})
+        ledgers = db.query(Ledger).all()
+        result = []
+        for l in ledgers:
+            result.append({
+                "document_id": l.document_id,
+                "client_name": l.client_name,
+                "document_type": l.document_type,
+                "stage": l.stage,
+                "status": l.status,
+                "confidence_score": l.confidence_score,
+                "provider": l.provider,
+            })
+        if format_type == "csv":
+            import io, csv
+            from flask import Response
+            si = io.StringIO()
+            if result:
+                writer = csv.DictWriter(si, fieldnames=result[0].keys())
+                writer.writeheader()
+                writer.writerows(result)
+            return Response(si.getvalue(), mimetype="text/csv", headers={"Content-Disposition": "attachment; filename=ledger_export.csv"})
+        from flask import jsonify
+        return jsonify(result)
     except Exception as e:
-        db.rollback()
-        return jsonify({"ok": False, "error": str(e)}), 500
+        from flask import jsonify
+        return jsonify({"error": str(e)}), 500
     finally:
         db.close()
-        client_db.close()

@@ -64,6 +64,23 @@ def run_validation_pipeline(
         human_verified_fields=human_verified_fields
     )
 
+    escalated = (context or {}).get("workflow", {}).get("escalated_exceptions", [])
+    if escalated:
+        filtered_exceptions = []
+        for exc in val_result.get("exceptions", []):
+            code = exc.get("code")
+            field = exc.get("field")
+            is_escalated = False
+            for e in escalated:
+                if e.get("code") == code and e.get("field") == field:
+                    is_escalated = True
+                    break
+            
+            if not is_escalated:
+                filtered_exceptions.append(exc)
+                
+        val_result["exceptions"] = filtered_exceptions
+
     fixable_exceptions, review_exceptions = classify_exceptions(
         exceptions=val_result["exceptions"],
         flat_data=flat_data,

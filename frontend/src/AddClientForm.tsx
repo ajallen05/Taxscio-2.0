@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * AddClientForm.jsx
  * Full-featured Add Client form with:

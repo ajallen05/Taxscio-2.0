@@ -22,8 +22,8 @@ from typing import Iterable
 import psycopg2
 from psycopg2.extras import Json, RealDictCursor
 
-DEFAULT_CLIENT_DB_URL = "postgresql://postgres:0406@localhost:5432/client_database"
-DEFAULT_LEDGER_DB_URL = "postgresql://postgres:0406@localhost:5432/ledgerdb"
+DEFAULT_CLIENT_DB_URL = "postgresql://postgres:sujan%402004@localhost:5432/client_database"
+DEFAULT_LEDGER_DB_URL = "postgresql://postgres:sujan%402004@localhost:5432/ledger_db"
 CLIENT_DB_URL = os.getenv("CLIENT_DATABASE_URL", DEFAULT_CLIENT_DB_URL)
 LEDGER_DB_URL = os.getenv("DATABASE_URL", DEFAULT_LEDGER_DB_URL)
 

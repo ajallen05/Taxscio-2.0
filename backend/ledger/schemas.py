@@ -13,7 +13,9 @@ class DocumentCreate(BaseModel):
     cpa: Optional[str] = None
     due_date: Optional[str] = None
     confidence_score: Optional[float] = None
-    local_json_path: Optional[str] = None
+    extraction_data: Optional[dict] = None
+    validation_data: Optional[dict] = None
+    content_data: Optional[dict] = None
     
     class Config:
         arbitrary_types_allowed = True
