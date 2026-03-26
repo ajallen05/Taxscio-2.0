@@ -2236,21 +2236,15 @@ function validateFieldInput(field, value) {
     }
 
     // ── Currency / monetary amounts ──────────────────────────────────
-    const CURRENCY_FIELDS = [
-        'wages', 'income', 'amount', 'payment', 'compensation',
-        'withheld', 'withholding', 'tax', 'salary', 'tip',
-        'distribution', 'dividend', 'interest', 'proceeds',
-        'gross', 'net', 'adjusted', 'deduction', 'credit',
-        'contribution', 'benefit', 'premium', 'cost', 'basis',
+    // Mirrors backend engine.py NUMERIC_FIELD_SUFFIXES exactly.
+    // Suffix matching prevents false positives on distribution_code, date_of_payment, etc.
+    const NUMERIC_FIELD_SUFFIXES = [
+        '_amount', '_income', '_wages', '_tax', '_withheld',
+        '_compensation', '_proceeds', '_gain', '_loss', '_credit',
+        '_payment', '_distribution', '_interest', '_dividends',
+        '_royalties', '_benefits', '_contributions', '_deduction',
     ];
-    const NON_CURRENCY_SUFFIXES = [
-        '_code', '_type', '_id', '_number', '_status',
-        '_indicator', '_flag', '_method', '_category',
-        '_date', '_time', '_datetime', '_at',
-    ];
-    const isCurrency = CURRENCY_FIELDS.some(kw => f.includes(kw))
-        && !NON_CURRENCY_SUFFIXES.some(suffix => f.endsWith(suffix))
-        && !f.startsWith('date_of_');
+    const isCurrency = NUMERIC_FIELD_SUFFIXES.some(suffix => f.endsWith(suffix));
     if (isCurrency) {
         const cleaned = v.replace(/[$,\s]/g, '');
         const num = parseFloat(cleaned);
@@ -2501,16 +2495,14 @@ function LiveExcCard({ exc, formType, filename, apiUrl, documentId: documentIdPr
                             >
                                 {isSubmitting ? 'Applying…' : `Accept AI Suggestion${proposedDisplay ? ` (→ ${proposedDisplay})` : ''}`}
                             </button>
-                            {sevDisplay === 'LOW' && (
-                                <button
-                                    type="button"
-                                    className="btn btn-danger"
-                                    onClick={handleEscalate}
-                                    disabled={escalationLoading || escalated}
-                                >
-                                    {escalationLoading ? 'Sending…' : escalated ? 'Escalated' : 'Escalate'}
-                                </button>
-                            )}
+                            <button
+                                type="button"
+                                className="btn btn-danger"
+                                onClick={handleEscalate}
+                                disabled={escalationLoading || escalated}
+                            >
+                                {escalationLoading ? 'Sending…' : escalated ? 'Escalated' : 'Escalate'}
+                            </button>
                         </div>
                     );
                 }
@@ -2557,16 +2549,14 @@ function LiveExcCard({ exc, formType, filename, apiUrl, documentId: documentIdPr
                                 >
                                     {isSubmitting ? 'Validating…' : 'Submit'}
                                 </button>
-                                {sevDisplay === 'LOW' && (
-                                    <button
-                                        type="button"
-                                        className="btn btn-danger"
-                                        onClick={handleEscalate}
-                                        disabled={escalationLoading || escalated}
-                                    >
-                                        Escalate
-                                    </button>
-                                )}
+                                <button
+                                    type="button"
+                                    className="btn btn-danger"
+                                    onClick={handleEscalate}
+                                    disabled={escalationLoading || escalated}
+                                >
+                                    Escalate
+                                </button>
                             </div>
                         </div>
                     );
@@ -2606,16 +2596,14 @@ function LiveExcCard({ exc, formType, filename, apiUrl, documentId: documentIdPr
                             >
                                 Cancel
                             </button>
-                            {sevDisplay === 'LOW' && (
-                                <button
-                                    type="button"
-                                    className="btn btn-danger"
-                                    onClick={handleEscalate}
-                                    disabled={escalationLoading || escalated}
-                                >
-                                    Escalate
-                                </button>
-                            )}
+                            <button
+                                type="button"
+                                className="btn btn-danger"
+                                onClick={handleEscalate}
+                                disabled={escalationLoading || escalated}
+                            >
+                                Escalate
+                            </button>
                         </div>
                     </div>
                 );
