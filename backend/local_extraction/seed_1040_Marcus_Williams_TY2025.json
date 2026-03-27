@@ -1,0 +1,39 @@
+{
+  "document_id": "seed_1040_Marcus_Williams_TY2025",
+  "form_type": "1040",
+  "source_filename": "Marcus_Williams_1040_2025.pdf",
+  "pdf_type": "digital",
+  "extracted_at": "2026-03-27T20:47:48.814631+00:00",
+  "last_updated_at": "2026-03-27T21:13:22.054225+00:00",
+  "document_confidence": 0.97,
+  "data": {
+    "tax_year": 2025,
+    "filing_status": "Single",
+    "taxpayer_name": "Marcus Williams",
+    "taxpayer_ssn": "***-**-4401",
+    "wages_salaries_tips": 78400,
+    "taxable_interest": 220,
+    "ordinary_dividends": 0,
+    "capital_gain_or_loss": 0,
+    "total_income": 78620,
+    "student_loan_interest": 2500,
+    "agi": 76120,
+    "standard_deduction": 15000,
+    "taxable_income": 61120,
+    "premium_tax_credit": 1200,
+    "health_coverage_tax_credit": 1200,
+    "form_8962_required": true,
+    "form_1095_a_required": true,
+    "total_tax": 10082,
+    "federal_income_tax_withheld": 9800,
+    "refund_or_amount_owed": 918
+  },
+  "exceptions": [],
+  "field_confidence": {
+    "wages_salaries_tips": 0.98,
+    "student_loan_interest": 0.95,
+    "premium_tax_credit": 0.91,
+    "health_coverage_tax_credit": 0.9
+  },
+  "exception_audit": []
+}

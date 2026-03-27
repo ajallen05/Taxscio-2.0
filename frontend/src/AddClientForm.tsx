@@ -243,6 +243,8 @@ function validate(form) {
         if (!form.trust_name?.trim()) errors.trust_name = 'Trust name is required';
     }
 
+    if (!form.lifecycle_stage) errors.lifecycle_stage = 'Lifecycle stage is required';
+
     if (form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) {
         errors.email = 'Invalid email address';
     }
@@ -499,10 +501,11 @@ export default function AddClientForm({ apiUrl, onSuccess, onCancel, initialData
 
             {/* ══ Section 5: Client Classification ══ */}
             <FormSection title="Client Classification" icon="🏷️">
-                <Field label="Lifecycle Stage">
+                <Field label="Lifecycle Stage" required error={errors.lifecycle_stage}>
                     <SelectInput
                         value={form.lifecycle_stage} onChange={set('lifecycle_stage')}
                         options={opts('lifecycle_stage')} placeholder="Select stage…"
+                        error={errors.lifecycle_stage}
                     />
                 </Field>
                 <Field label="Risk Profile">

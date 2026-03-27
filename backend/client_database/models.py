@@ -1,8 +1,9 @@
 """
 client_database/models.py
 SQLAlchemy ORM models for the two core tables:
-  - enum_master  (drives all dropdowns)
-  - clients      (stores client records)
+  - enum_master              (drives all dropdowns)
+  - clients                  (stores client records)
+  - client_document_checklist (expected documents per client/year)
 """
 import uuid
 from datetime import datetime, timezone
@@ -96,4 +97,33 @@ class Client(Base):
         Index("ix_clients_email", "email"),
         Index("ix_clients_entity_type", "entity_type"),
         Index("ix_clients_lifecycle_stage", "lifecycle_stage"),
+    )
+
+
+class ClientDocumentChecklist(Base):
+    __tablename__ = "client_document_checklist"
+
+    id             = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    client_id      = Column(UUID(as_uuid=False), nullable=False, index=True)
+    tax_year       = Column(Integer,     nullable=False, index=True)
+    form_name      = Column(String(100), nullable=False)
+    expected_count = Column(Integer,     nullable=False, default=1)
+
+    # ── FDR-derived metadata (added by Form Dependency Resolver) ─────────────
+    # confidence   : "deterministic" | "inferred" | "unresolvable" | NULL (manual)
+    # trigger_line : flat field name that caused this form to be flagged
+    # trigger_value: string value of that field at the time FDR ran
+    # source       : "fdr_derived" = written by FDR; "manual" = added by CPA
+    #                FDR never overwrites rows where source = "manual"
+    confidence    = Column(String(50),  nullable=True,  default=None)
+    trigger_line  = Column(String(200), nullable=True,  default=None)
+    trigger_value = Column(String(500), nullable=True,  default=None)
+    source        = Column(String(50),  nullable=False, default="manual")
+
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_now)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_now, onupdate=_now)
+
+    __table_args__ = (
+        UniqueConstraint("client_id", "tax_year", "form_name", name="uq_client_doc_checklist"),
+        Index("ix_client_doc_checklist_client_year", "client_id", "tax_year"),
     )

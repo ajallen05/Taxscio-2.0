@@ -1,0 +1,99 @@
+{
+  "document_id": "DOC-c1e1f189",
+  "form_type": "1099-MISC",
+  "source_filename": "1099_misc_2025.pdf",
+  "pdf_type": "digital",
+  "extracted_at": "2026-03-27T21:16:57.292769+00:00",
+  "last_updated_at": "2026-03-27T21:16:57.292769+00:00",
+  "document_confidence": 0.88,
+  "data": {
+    "form": "Form1099-MISC",
+    "year": null,
+    "status": {
+      "void": false,
+      "corrected": true
+    },
+    "payer_information": {
+      "payer_name": "CANNONTOOLS\u20acO",
+      "payer_address": "2426NORTHCATHERINEST",
+      "payer_city": "ATLANTAGA",
+      "payer_state": "GA",
+      "payer_zip": "30019",
+      "payer_phone": null,
+      "payer_tin": "10-9920202"
+    },
+    "recipient_information": {
+      "recipient_tin": "101-42-0202",
+      "recipient_name": "MICHAELMJORDAN",
+      "recipient_address": null,
+      "recipient_city": "STERLINGHEIGHTS",
+      "recipient_state": "MI",
+      "recipient_zip": "48310"
+    },
+    "income_boxes": {
+      "box_1_rents": null,
+      "box_2_royalties": "25000",
+      "box_3_other_income": "675000",
+      "box_4_federal_income_tax_withheld": "155000",
+      "box_5_fishing_boat_proceeds": null,
+      "box_6_medical_and_health_care_payments": null,
+      "box_7_payer_made_direct_sales_over_5000": true,
+      "box_8_substitute_payments_in_lieu_of_dividends_or_interest": "1100.00",
+      "box_9_crop_insurance_proceeds": null,
+      "box_10_gross_proceeds_paid_to_an_attorney": null,
+      "box_11_fish_purchased_for_resale": "1290.00",
+      "box_12_section_409A_deferrals": null,
+      "box_13_fatca_filing_requirement": false,
+      "box_14": null,
+      "box_15_nonqualified_deferred_compensation": "7650.00"
+    },
+    "state_information": {
+      "box_16_state_tax_withheld": null,
+      "box_17_state_payer_state_number": "N",
+      "box_18_state_income": null
+    },
+    "additional_information": {
+      "account_number": "00202070"
+    }
+  },
+  "exceptions": [],
+  "field_confidence": {
+    "form": 0.97,
+    "year": 0.7,
+    "void": 0.97,
+    "corrected": 0.97,
+    "payer_name": 0.97,
+    "payer_address": 0.97,
+    "payer_city": 0.97,
+    "payer_state": 0.97,
+    "payer_zip": 0.97,
+    "payer_phone": 0.7,
+    "payer_tin": 0.97,
+    "recipient_tin": 0.97,
+    "recipient_name": 0.97,
+    "recipient_address": 0.7,
+    "recipient_city": 0.97,
+    "recipient_state": 0.97,
+    "recipient_zip": 0.97,
+    "rents": 0.7,
+    "royalties": 0.97,
+    "other_income": 0.97,
+    "federal_income_tax_withheld": 0.97,
+    "fishing_boat_proceeds": 0.7,
+    "medical_and_health_care_payments": 0.7,
+    "payer_made_direct_sales_over_5000": 0.97,
+    "substitute_payments_in_lieu_of_dividends_or_interest": 0.97,
+    "crop_insurance_proceeds": 0.7,
+    "gross_proceeds_paid_to_an_attorney": 0.7,
+    "fish_purchased_for_resale": 0.97,
+    "section_409A_deferrals": 0.7,
+    "fatca_filing_requirement": 0.97,
+    "box_14": 0.7,
+    "nonqualified_deferred_compensation": 0.97,
+    "state_tax_withheld": 0.7,
+    "state_payer_state_number": 0.97,
+    "state_income": 0.7,
+    "account_number": 0.97
+  },
+  "exception_audit": []
+}

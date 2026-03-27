@@ -3,6 +3,7 @@ from pydantic import BaseModel
 
 class DocumentCreate(BaseModel):
     client_name: str
+    client_id: Optional[str] = None       # UUID from client_database.clients.id
     document_type: str
     provider: str
     description: str
@@ -13,6 +14,7 @@ class DocumentCreate(BaseModel):
     cpa: Optional[str] = None
     due_date: Optional[str] = None
     confidence_score: Optional[float] = None
+    extraction_json_path: Optional[str] = None   # path to local_extraction/<doc_id>.json
     extraction_data: Optional[dict] = None
     validation_data: Optional[dict] = None
     content_data: Optional[dict] = None

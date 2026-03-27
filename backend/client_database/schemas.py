@@ -4,8 +4,8 @@ Pydantic schemas for request/response validation.
 """
 from __future__ import annotations
 from datetime import date, datetime
-from typing import Any, List, Optional
-from pydantic import BaseModel, EmailStr, field_validator, model_validator
+from typing import Any, Dict, List, Literal, Optional
+from pydantic import BaseModel, field_validator, model_validator
 
 
 # ─────────────────────────────────────────────────────────────
@@ -106,3 +106,52 @@ class ClientOut(BaseModel):
     updated_at:            datetime
 
     model_config = {"from_attributes": True}
+
+
+class ChecklistFormItem(BaseModel):
+    form_name:        str
+    count:            int
+    submitted_count:  int
+    prior_year_count: int = 0          # how many were submitted in the previous tax year
+    status:           str
+    # FDR-derived metadata (null for manually-added rows)
+    confidence:    Optional[str] = None  # "deterministic" | "inferred" | "unresolvable"
+    trigger_line:  Optional[str] = None  # flat field that caused this flag
+    trigger_value: Optional[str] = None  # value of that field at FDR run time
+    source:        Optional[str] = None  # "fdr_derived" | "manual"
+
+
+class ChecklistFormsResponse(BaseModel):
+    tax_year:      int
+    previous_year: Optional[int] = None
+    forms:         List[ChecklistFormItem]
+
+
+class ChecklistFormAction(BaseModel):
+    form_name: str
+
+
+# ─────────────────────────────────────────────────────────────
+# FDR derive-from-1040 endpoint schemas
+# ─────────────────────────────────────────────────────────────
+
+class DeriveFrom1040Request(BaseModel):
+    tax_year:           int
+    extracted_fields:   Dict[str, Any]        # full nested 1040 JSON from /extract
+    field_confidence_map: Dict[str, float]    # per-field scores from scorer.py
+    document_type:      Literal["digital", "scanned"] = "digital"
+    session_id:         Optional[str] = None  # optional audit trail reference
+
+
+class FDRSummary(BaseModel):
+    deterministic_count:   int
+    inferred_count:        int
+    unresolvable_count:    int
+    conflicts_detected:    List[str]
+    pre_pass_flags:        List[str]
+    tax_year_rules_loaded: str
+
+
+class DeriveFrom1040Response(BaseModel):
+    forms:       List[ChecklistFormItem]
+    fdr_summary: FDRSummary

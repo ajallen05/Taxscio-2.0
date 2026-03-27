@@ -1,0 +1,42 @@
+{
+  "document_id": "seed_1040_Kevin_Torres_TY2025",
+  "form_type": "1040",
+  "source_filename": "Kevin_Torres_1040_2025.pdf",
+  "pdf_type": "digital",
+  "extracted_at": "2026-03-27T20:47:47.745513+00:00",
+  "last_updated_at": "2026-03-27T21:13:21.129336+00:00",
+  "document_confidence": 0.97,
+  "data": {
+    "tax_year": 2025,
+    "filing_status": "Single",
+    "taxpayer_name": "Kevin Torres",
+    "taxpayer_ssn": "***-**-2201",
+    "wages_salaries_tips": 0,
+    "taxable_interest": 410,
+    "ordinary_dividends": 0,
+    "business_income_or_loss": 87300,
+    "schedule_c_required": true,
+    "rental_real_estate_income": 18600,
+    "schedule_e_required": true,
+    "capital_gain_or_loss": 0,
+    "other_income": 2100,
+    "total_income": 108410,
+    "self_employment_tax": 12319,
+    "deductible_part_of_se_tax": 6160,
+    "agi": 102250,
+    "standard_deduction": 15000,
+    "taxable_income": 87250,
+    "total_tax": 19870,
+    "federal_income_tax_withheld": 0,
+    "estimated_tax_payments": 18000,
+    "refund_or_amount_owed": 1870
+  },
+  "exceptions": [],
+  "field_confidence": {
+    "business_income_or_loss": 0.94,
+    "rental_real_estate_income": 0.92,
+    "self_employment_tax": 0.95,
+    "estimated_tax_payments": 0.97
+  },
+  "exception_audit": []
+}

@@ -1,0 +1,38 @@
+{
+  "document_id": "seed_1040_Patel_Family_Trust_TY2025",
+  "form_type": "1040",
+  "source_filename": "Patel_Family_Trust_1040_2025.pdf",
+  "pdf_type": "digital",
+  "extracted_at": "2026-03-27T20:47:49.341370+00:00",
+  "last_updated_at": "2026-03-27T21:13:22.472106+00:00",
+  "document_confidence": 0.97,
+  "data": {
+    "tax_year": 2025,
+    "filing_status": "Trust / Estate",
+    "taxpayer_name": "Patel Family Trust",
+    "taxpayer_ssn": "**-***6612",
+    "wages_salaries_tips": 0,
+    "taxable_interest": 8200,
+    "ordinary_dividends": 34500,
+    "qualified_dividends": 31000,
+    "capital_gain_or_loss": 12800,
+    "schedule_d_required": true,
+    "partnership_s_corp_income": 55000,
+    "schedule_e_required": true,
+    "total_income": 110500,
+    "agi": 110500,
+    "taxable_income": 86500,
+    "total_tax": 23410,
+    "federal_income_tax_withheld": 22000,
+    "estimated_tax_payments": 5000,
+    "refund_or_amount_owed": 3590
+  },
+  "exceptions": [],
+  "field_confidence": {
+    "taxable_interest": 0.95,
+    "ordinary_dividends": 0.97,
+    "capital_gain_or_loss": 0.93,
+    "partnership_s_corp_income": 0.89
+  },
+  "exception_audit": []
+}

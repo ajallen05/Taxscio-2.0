@@ -75,3 +75,33 @@ Store only core ledger metadata with `client_id` linkage, and stop persisting la
 - [x] Remove payload writes in ledger service and response serialization.
 - [x] Clear existing payload JSON values in DB while preserving client_id.
 - [x] Validate diagnostics are clean.
+
+# Plan: 1040 Document Checklist panel
+
+## Goal
+When a client has uploaded a `1040`, show a checklist panel in the Clients > Documents tab with `Forms | Count | Status | Action`, seeded from previous year client documents, and allow Add/Remove actions with persistence.
+
+## Files to modify
+- backend/client_database/models.py
+- backend/client_database/schemas.py
+- backend/client_database/services.py
+- backend/client_database/routes.py
+- frontend/src/App.tsx
+- plan.md
+
+## Constraints and edge cases
+- Show checklist only when selected client has a `1040` document.
+- Seed from previous year ledger documents for that client; avoid duplicate rows.
+- Remove action with count 1 must ask for confirmation before deleting the form.
+- Add action via modal must increment existing forms or create a new row.
+
+## Verification
+- Confirm new backend checklist APIs return expected form rows and support add/remove.
+- Confirm documents tab renders checklist panel on right side for 1040 clients.
+- Confirm add/remove interactions update counts and statuses correctly.
+
+## Steps
+- [x] Add client checklist model and API endpoints (list/add/remove + available forms).
+- [x] Wire Documents tab UI right-side panel with table columns and status mapping.
+- [x] Implement Add Form modal and Remove confirmation modal behavior.
+- [x] Run frontend build and check diagnostics.

@@ -5,6 +5,16 @@ from .models import Ledger
 from .schemas import DocumentCreate
 from .services import create_document, record_exception_escalation, update_status
 
+# local extraction store — update JSON file when exceptions are escalated/resolved
+try:
+    from backend.local_extraction_store import (
+        update_exceptions     as _les_update,
+        mark_exception_resolved as _les_resolve,
+    )
+    _HAS_LES = True
+except ImportError:
+    _HAS_LES = False
+
 ledger_bp = Blueprint("ledger", __name__)
 
 @ledger_bp.route("/submit", methods=["POST"])
@@ -59,6 +69,46 @@ def validated_doc(document_id):
     finally:
         db.close()
 
+@ledger_bp.route("/associate-client", methods=["PATCH"])
+def associate_client():
+    """
+    Backfill client_id on ledger rows that were created before a client was matched.
+    Matches rows by client_name + document_type (+ optional tax_year).
+    Safe to call multiple times (idempotent).
+    """
+    if not SessionLocal:
+        return jsonify({"error": "Database not configured"}), 503
+    body = request.get_json(force=True, silent=True) or {}
+    client_id    = body.get("client_id")
+    client_name  = body.get("client_name")
+    document_type = body.get("document_type")
+    tax_year     = body.get("tax_year")
+
+    if not client_id or not client_name:
+        return jsonify({"error": "client_id and client_name are required"}), 400
+
+    db = SessionLocal()
+    try:
+        q = db.query(Ledger).filter(Ledger.client_name == client_name)
+        if document_type:
+            q = q.filter(Ledger.document_type == document_type)
+        if tax_year:
+            q = q.filter(Ledger.tax_year == int(tax_year))
+        rows = q.all()
+        updated = 0
+        for row in rows:
+            if not row.client_id:
+                row.client_id = client_id
+                updated += 1
+        db.commit()
+        return jsonify({"ok": True, "updated_rows": updated})
+    except Exception as e:
+        db.rollback()
+        return jsonify({"error": str(e), "ok": False}), 500
+    finally:
+        db.close()
+
+
 @ledger_bp.route("/escalate-exception", methods=["POST"])
 def escalate_exception():
     """Persist CPA escalation from Exceptions UI; optional link to ledger row by document_id or client+form."""
@@ -83,6 +133,44 @@ def escalate_exception():
             filename=body.get("filename"),
             extra=body.get("payload") if isinstance(body.get("payload"), dict) else {},
         )
+        # Sync the local extraction file:
+        # • remove the resolved exception from exceptions[]
+        # • append audit event to exception_audit[]
+        if _HAS_LES:
+            try:
+                # Resolve the document_id: use what was sent, else look it up from ledger
+                sync_doc_id = document_id
+                if not sync_doc_id and (client_name or document_type):
+                    row = db.query(Ledger).filter(
+                        *(
+                            [Ledger.client_name == client_name] if client_name else []
+                        ) + (
+                            [Ledger.document_type == document_type] if document_type else []
+                        )
+                    ).order_by(Ledger.id.desc()).first()
+                    if row:
+                        sync_doc_id = row.document_id
+
+                if sync_doc_id:
+                    audit_entry = {
+                        "type":            "exception_escalated",
+                        "escalation_id":   result.get("escalation_id"),
+                        "exception_code":  body.get("exception_code"),
+                        "exception_field": body.get("exception_field"),
+                        "severity":        body.get("severity"),
+                        "description":     body.get("description"),
+                        "filename":        body.get("filename"),
+                        "time":            __import__("datetime").datetime.utcnow().isoformat() + "Z",
+                    }
+                    _les_resolve(
+                        document_id     = sync_doc_id,
+                        exception_code  = body.get("exception_code"),
+                        exception_field = body.get("exception_field"),
+                        audit_entry     = audit_entry,
+                    )
+            except Exception:
+                pass
+
         return jsonify({"ok": True, **result})
     except Exception as e:
         db.rollback()

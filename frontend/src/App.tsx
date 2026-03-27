@@ -42,6 +42,18 @@ function countDedupedExceptions(result) {
     return n;
 }
 
+function normalizeChecklistFormName(name) {
+    return String(name || '').trim().toUpperCase();
+}
+
+function normalizeChecklistErrorMessage(err) {
+    const raw = String(err?.message || err || '').trim();
+    if (!raw) return '';
+    if (raw.toLowerCase() === 'not found') return '';
+    if (raw.includes('404')) return '';
+    return raw;
+}
+
 const STATIC_EXCEPTIONS = [
     { id: 'e1', client: 'Patel LLC', form: 'Form 1120-S · Schedule C', severity: 'high', type: '⚡ Data Mismatch', desc: 'Revenue ($1,240,000) differs from QuickBooks P&L ($1,287,500). Variance of $47,500 in Q4.', ai: 'Request Q4 bank reconciliation.', conf: '88%', confCls: 'high' },
     { id: 'e2', client: 'Sarah Mitchell', form: 'Form 1040 · Income', severity: 'high', type: '⚡ Data Mismatch', desc: 'W-2 income ($84,200) ≠ bank deposits ($91,450). Variance: $7,250.', ai: 'Request 1099-NEC — likely unreported contract work.', conf: '72%', confCls: 'med' },
@@ -582,7 +594,7 @@ const CLIENT_DETAIL_TABS = [
     { id: 'activity', label: 'Activity' },
 ];
 
-function PageClients({ lastExtraction, apiUrl, onUpload, files, results, setResults }) {
+function PageClients({ lastExtraction, apiUrl, onUpload, files, results, setResults, checklistReloadTrigger }) {
     const [activeClient, setActiveClient] = useState(0);
     const [activeTab, setActiveTab] = useState('summary');
     const [filter, setFilter] = useState('All');
@@ -591,6 +603,16 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results, setResu
     const [ledgerRows, setLedgerRows] = useState([]);
     const [ledgerError, setLedgerError] = useState(null);
     const [selectedDocKey, setSelectedDocKey] = useState(null);
+    const [selectedTaxYear, setSelectedTaxYear] = useState(new Date().getFullYear());
+    const [checklistRows, setChecklistRows] = useState([]);
+    const [checklistPreviousYear, setChecklistPreviousYear] = useState<number | null>(null);
+    const [checklistLoading, setChecklistLoading] = useState(false);
+    const [checklistError, setChecklistError] = useState('');
+    const [showAddFormModal, setShowAddFormModal] = useState(false);
+    const [showRemoveModal, setShowRemoveModal] = useState(false);
+    const [pendingRemoveForm, setPendingRemoveForm] = useState(null);
+    const [availableForms, setAvailableForms] = useState([]);
+    const [newFormName, setNewFormName] = useState('');
 
     // Fetch clients from API on mount
     useEffect(() => {
@@ -696,11 +718,14 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results, setResu
             const r = results[f.file.name];
             if (r?.document_id) seenLedgerIds.add(r.document_id);
             const exc = countDedupedExceptions(r);
+            // Extract tax year from the result data if available
+            const extractedYear = r?.data?.tax_year || r?.extracted_fields?.tax_year || null;
             rows.push({
                 key: `up:${f.file.name}`,
                 kind: 'upload',
                 label: f.file.name,
                 form: f.form_type || r?.form_type || '—',
+                taxYear: extractedYear ? parseInt(extractedYear, 10) : null,
                 file: f,
                 result: r,
                 stage: null,
@@ -726,6 +751,7 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results, setResu
                 kind: 'ledger',
                 label: docId ? `${docId}` : (rec.description || 'Document'),
                 form: rec.document_type || '—',
+                taxYear: rec.tax_year || null,
                 file: null,
                 result: null,
                 stage: rec.stage || '—',
@@ -858,6 +884,97 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results, setResu
             latestActivity: latest ? `${latest.action} (${latest.date})` : 'No activity yet',
         };
     }, [clientDocumentRows, clientActivityRows, clientExceptionTotal]);
+
+    const has1040Document = useMemo(
+        () => clientDocumentRows.some((row) => normalizeChecklistFormName(row.form) === '1040'),
+        [clientDocumentRows],
+    );
+
+    const loadChecklist = useCallback(async () => {
+        if (!client?.fullData?.id) {
+            setChecklistRows([]);
+            setChecklistError('');
+            return;
+        }
+        setChecklistLoading(true);
+        setChecklistError('');
+        try {
+            const res = await fetch(`${apiUrl}/clients/${client.fullData.id}/document-checklist?tax_year=${selectedTaxYear}`);
+            const data = await res.json();
+            if (res.status === 404) {
+                setChecklistRows([]);
+                return;
+            }
+            if (!res.ok) throw new Error(data?.detail || data?.error || `HTTP ${res.status}`);
+            setChecklistRows(Array.isArray(data?.forms) ? data.forms : []);
+            setChecklistPreviousYear(data?.previous_year ?? null);
+        } catch (err) {
+            setChecklistRows([]);
+            setChecklistError(normalizeChecklistErrorMessage(err) || 'Failed to load checklist.');
+        } finally {
+            setChecklistLoading(false);
+        }
+    // checklistReloadTrigger intentionally included so FDR derive → reload works
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [apiUrl, client?.fullData?.id, selectedTaxYear, checklistReloadTrigger]);
+
+    useEffect(() => {
+        loadChecklist();
+    }, [loadChecklist]);
+
+    useEffect(() => {
+        setChecklistError('');
+    }, [activeClient]);
+
+    useEffect(() => {
+        if (!showAddFormModal) return;
+        fetch(`${apiUrl}/forms`)
+            .then((r) => r.json())
+            .then((data) => {
+                const forms = Array.isArray(data?.forms) ? data.forms : [];
+                setAvailableForms(forms.map((f) => normalizeChecklistFormName(f)));
+            })
+            .catch(() => setAvailableForms([]));
+    }, [apiUrl, showAddFormModal]);
+
+    const handleChecklistAdd = useCallback(async (formName) => {
+        const form = normalizeChecklistFormName(formName);
+        if (!form || !client?.fullData?.id) return;
+        try {
+            const res = await fetch(`${apiUrl}/clients/${client.fullData.id}/document-checklist/forms?tax_year=${selectedTaxYear}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ form_name: form }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data?.detail || data?.error || 'Failed to add form');
+            setChecklistRows(Array.isArray(data?.forms) ? data.forms : []);
+            if (data?.previous_year) setChecklistPreviousYear(data.previous_year);
+            setShowAddFormModal(false);
+            setNewFormName('');
+        } catch (err) {
+            setChecklistError(normalizeChecklistErrorMessage(err) || 'Failed to add form');
+        }
+    }, [apiUrl, client?.fullData?.id, selectedTaxYear]);
+
+    const handleChecklistRemove = useCallback(async (row) => {
+        if (!client?.fullData?.id || !row?.form_name) return;
+        try {
+            const encoded = encodeURIComponent(row.form_name);
+            const res = await fetch(`${apiUrl}/clients/${client.fullData.id}/document-checklist/forms/${encoded}?tax_year=${selectedTaxYear}`, {
+                method: 'DELETE',
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data?.detail || data?.error || 'Failed to remove form');
+            setChecklistRows(Array.isArray(data?.forms) ? data.forms : []);
+            if (data?.previous_year) setChecklistPreviousYear(data.previous_year);
+        } catch (err) {
+            setChecklistError(normalizeChecklistErrorMessage(err) || 'Failed to remove form');
+        } finally {
+            setShowRemoveModal(false);
+            setPendingRemoveForm(null);
+        }
+    }, [apiUrl, client?.fullData?.id, selectedTaxYear]);
 
     const [clientAISummaryText, setClientAISummaryText] = useState('');
     const [clientAISummaryLoading, setClientAISummaryLoading] = useState(false);
@@ -1042,7 +1159,11 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results, setResu
                 <div className="client-header">
                     <h2>{client.name} <span className="entity-badge" style={{ fontSize: 12 }}>{client.type}</span></h2>
                     <div className="client-header-actions">
-                        <select style={{ fontSize: 12 }}><option>TY 2025</option><option>TY 2024</option><option>TY 2023</option></select>
+                        <select style={{ fontSize: 12 }} value={`TY ${selectedTaxYear}`} onChange={(e) => setSelectedTaxYear(Number(String(e.target.value).replace('TY ', '')))}>
+                            {[selectedTaxYear, selectedTaxYear - 1, selectedTaxYear - 2].map((y) => (
+                                <option key={y} value={`TY ${y}`}>{`TY ${y}`}</option>
+                            ))}
+                        </select>
                         <button className="btn btn-secondary">Generate Portal Link</button>
                         <button className="btn btn-primary">Begin CPA Review</button>
                     </div>
@@ -1263,7 +1384,8 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results, setResu
                     </div>
                 )}
                 {activeTab === 'documents' && (
-                    <div>
+                    <div style={{ display: 'flex', gap: 18, alignItems: 'flex-start', minWidth: 0 }}>
+                        <div style={{ flex: 1, minWidth: 0, overflowX: 'auto' }}>
                         <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 12px', lineHeight: 1.5 }}>
                             Includes <strong>this browser&apos;s uploads</strong> matched by extracted name/TIN, plus <strong>filing pipeline / ledger</strong> rows where the ledger client name matches this record.
                             {ledgerError && (
@@ -1275,15 +1397,27 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results, setResu
                             <tbody>
                                 {clientDocumentRows.length > 0 ? clientDocumentRows.map((row) => {
                                     const hasExtractedJson = row.kind === 'upload' && !!(row.result?.data || row.result?.extracted_fields);
+                                    const is1040Row = normalizeChecklistFormName(row.form) === '1040';
+                                    const isClickable = hasExtractedJson || is1040Row;
                                     return (
                                     <tr
                                         key={row.key}
-                                        onClick={() => hasExtractedJson && setSelectedDocKey(row.key)}
-                                        style={{
-                                            cursor: hasExtractedJson ? 'pointer' : 'default',
-                                            background: selectedDocKey === row.key ? 'var(--surface-1)' : undefined,
+                                        onClick={() => {
+                                            if (!isClickable) return;
+                                            const nextKey = selectedDocKey === row.key ? null : row.key;
+                                            setSelectedDocKey(nextKey);
+                                            // When opening a 1040 row, snap the checklist year to that 1040's tax year
+                                            if (nextKey && is1040Row && row.taxYear) {
+                                                setSelectedTaxYear(row.taxYear);
+                                            }
                                         }}
-                                        title={hasExtractedJson ? 'Click to view extracted JSON' : ''}
+                                        style={{
+                                            cursor: isClickable ? 'pointer' : 'default',
+                                            background: selectedDocKey === row.key
+                                                ? is1040Row ? 'rgba(59,130,246,.08)' : 'var(--surface-1)'
+                                                : undefined,
+                                        }}
+                                        title={is1040Row ? 'Click to open Document Checklist' : hasExtractedJson ? 'Click to view extracted JSON' : ''}
                                     >
                                         <td style={{ fontWeight: 500, maxWidth: 220 }} title={row.label}>{row.label}</td>
                                         <td className="mono">{row.form}</td>
@@ -1346,6 +1480,146 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results, setResu
                                 >
                                     {JSON.stringify(selectedDocumentJson, null, 2)}
                                 </pre>
+                            </div>
+                        )}
+                        </div>
+                        {client?.fullData?.id && selectedDocumentRow && normalizeChecklistFormName(selectedDocumentRow.form) === '1040' && (
+                            <div style={{ width: 440, flex: '0 0 440px', minWidth: 440, position: 'relative', zIndex: 2, background: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: 14, boxShadow: '0 1px 2px rgba(15,23,42,.04)' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                                    <div style={{ fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.05em', fontWeight: 700 }}>
+                                        Document Checklist — TY {selectedTaxYear}
+                                    </div>
+                                    <button className="btn btn-secondary" style={{ fontSize: 11 }} onClick={() => setShowAddFormModal(true)}>Add Form</button>
+                                </div>
+                                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.35 }}>
+                                    {has1040Document
+                                        ? 'FDR-derived from 1040. Confirmed = line value present. Inferred = probable. Ask = needs confirmation.'
+                                        : 'Upload and associate a 1040 to auto-derive required forms, or add manually.'}
+                                </div>
+                                <div style={{ overflowX: 'auto' }}>
+                                <table className="data-table" style={{ marginBottom: 0, minWidth: 380 }}>
+                                    <thead>
+                                        <tr>
+                                            <th>Forms</th>
+                                            <th style={{ textAlign: 'center' }}>Count</th>
+                                            <th>Status</th>
+                                            <th>Action</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {checklistLoading ? (
+                                            <tr><td colSpan={4} style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: 18 }}>Loading checklist...</td></tr>
+                                        ) : checklistRows.length === 0 ? (
+                                            <tr><td colSpan={4} style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: 18 }}>
+                                                {has1040Document
+                                                    ? 'Upload detected but checklist not yet derived. Re-associate the 1040 to auto-populate, or use Add Form.'
+                                                    : 'No forms yet. Upload a 1040 in Ingestion Hub and associate it with this client to auto-populate, or use Add Form.'}
+                                            </td></tr>
+                                        ) : checklistRows
+                                            .filter(row => {
+                                                // Never show the return form itself in the supporting-docs checklist
+                                                const n = (row.form_name || '').toUpperCase();
+                                                return !['1040','1040-SR','1040-NR','1040-NR-EZ','1040-X','1040-ES','1040-V'].includes(n);
+                                            })
+                                            .map((row) => {
+                                            // Confidence dot: green = deterministic, amber = inferred, grey = unresolvable/manual
+                                            const dotColor = row.confidence === 'deterministic'
+                                                ? '#10b981'
+                                                : row.confidence === 'inferred'
+                                                    ? '#f59e0b'
+                                                    : '#9ca3af';
+                                            const dotTitle = row.confidence === 'deterministic'
+                                                ? `Confirmed — ${row.trigger_line} = ${row.trigger_value}`
+                                                : row.confidence === 'inferred'
+                                                    ? `Inferred — ${row.trigger_line} = ${row.trigger_value}`
+                                                    : row.confidence === 'unresolvable'
+                                                        ? 'Needs client confirmation'
+                                                        : 'Manually added';
+                                            const pyCount = row.prior_year_count || 0;
+                                            const pyYear  = checklistPreviousYear;
+                                            return (
+                                            <tr key={row.form_name}>
+                                                <td style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                                    <span
+                                                        title={dotTitle}
+                                                        style={{
+                                                            width: 7, height: 7, borderRadius: '50%',
+                                                            background: dotColor, flexShrink: 0,
+                                                            cursor: 'default',
+                                                        }}
+                                                    />
+                                                    <span className="mono" style={{ fontWeight: 500 }}>{row.form_name}</span>
+                                                    {pyCount > 0 && pyYear && (
+                                                        <span title={`Filed ${pyCount}× in ${pyYear}`} style={{
+                                                            fontSize: 9, fontWeight: 700, padding: '1px 5px',
+                                                            borderRadius: 4, background: 'rgba(156,163,175,.18)',
+                                                            color: 'var(--text-muted)', letterSpacing: '.02em',
+                                                            whiteSpace: 'nowrap',
+                                                        }}>
+                                                            {pyYear}↑{pyCount > 1 ? `×${pyCount}` : ''}
+                                                        </span>
+                                                    )}
+                                                </td>
+                                                <td style={{ textAlign: 'center', fontWeight: 700, fontSize: 13 }}>
+                                                    {row.count ?? 1}
+                                                </td>
+                                                <td>
+                                                    <span
+                                                        style={{
+                                                            fontSize: 11,
+                                                            fontWeight: 700,
+                                                            display: 'inline-flex',
+                                                            alignItems: 'center',
+                                                            padding: '3px 8px',
+                                                            borderRadius: 999,
+                                                            border: '1px solid var(--border)',
+                                                            background: row.status === 'Error'
+                                                                ? 'rgba(239,68,68,.12)'
+                                                                : row.status === 'Pending'
+                                                                    ? 'rgba(156,163,175,.14)'
+                                                                    : row.status === 'Partial'
+                                                                        ? 'rgba(245,158,11,.15)'
+                                                                        : 'rgba(16,185,129,.15)',
+                                                            color: row.status === 'Error'
+                                                                ? 'var(--red)'
+                                                                : row.status === 'Pending'
+                                                                    ? 'var(--text-muted)'
+                                                                    : row.status === 'Partial'
+                                                                        ? 'var(--amber)'
+                                                                        : 'var(--green)',
+                                                        }}
+                                                    >
+                                                        {row.status}
+                                                    </span>
+                                                </td>
+                                                <td style={{ display: 'flex', gap: 6, whiteSpace: 'nowrap' }}>
+                                                    <button className="btn btn-primary" style={{ fontSize: 11, padding: '4px 9px' }} onClick={() => handleChecklistAdd(row.form_name)}>Add</button>
+                                                    <button
+                                                        className="btn btn-secondary"
+                                                        style={{ fontSize: 11, padding: '4px 9px', color: 'var(--red)', borderColor: 'rgba(239,68,68,.35)' }}
+                                                        onClick={() => {
+                                                            if ((row.count || 1) <= 1) {
+                                                                setPendingRemoveForm(row);
+                                                                setShowRemoveModal(true);
+                                                            } else {
+                                                                handleChecklistRemove(row);
+                                                            }
+                                                        }}
+                                                    >
+                                                        Remove
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        );
+                                        })}
+                                    </tbody>
+                                </table>
+                                </div>
+                                {checklistError && (
+                                    <div style={{ marginTop: 10, fontSize: 11, color: 'var(--red)', background: 'rgba(239,68,68,.08)', border: '1px solid rgba(239,68,68,.25)', borderRadius: 8, padding: '6px 8px' }}>
+                                        {checklistError}
+                                    </div>
+                                )}
                             </div>
                         )}
                     </div>
@@ -1460,6 +1734,84 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results, setResu
                     </div>
                 )}
             </div>
+            {showAddFormModal && (() => {
+                const existingForms = new Set(checklistRows.map(r => normalizeChecklistFormName(r.form_name)));
+                const searchVal = newFormName.trim().toUpperCase();
+                const filtered = availableForms.filter(f =>
+                    !searchVal || f.toUpperCase().includes(searchVal)
+                );
+                return (
+                <div style={{ position: 'fixed', inset: 0, background: 'rgba(17,24,39,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}
+                    onClick={(e) => { if (e.target === e.currentTarget) { setShowAddFormModal(false); setNewFormName(''); } }}>
+                    <div style={{ width: 420, maxWidth: '92vw', background: 'var(--surface-0)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: 20, display: 'flex', flexDirection: 'column', maxHeight: '80vh' }}>
+                        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>Add Form</div>
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
+                            Select a form to add. If it already exists in the checklist, its count will increase.
+                        </div>
+                        {/* Search */}
+                        <input
+                            autoFocus
+                            value={newFormName}
+                            onChange={(e) => setNewFormName(e.target.value)}
+                            placeholder="Search or type a form name…"
+                            style={{ width: '100%', fontSize: 12, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface-1)', color: 'var(--text-primary)', marginBottom: 8, boxSizing: 'border-box' }}
+                        />
+                        {/* Form list */}
+                        <div style={{ flex: 1, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface-1)' }}>
+                            {filtered.length === 0 && searchVal ? (
+                                /* typed a custom name not in the list — offer to add it */
+                                <div
+                                    onClick={() => handleChecklistAdd(newFormName)}
+                                    style={{ padding: '10px 14px', fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-primary)' }}
+                                    onMouseEnter={e => e.currentTarget.style.background = 'var(--surface-2)'}
+                                    onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                                >
+                                    <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{searchVal}</span>
+                                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>— add as new form</span>
+                                </div>
+                            ) : (
+                                filtered.map((f) => {
+                                    const alreadyIn = existingForms.has(normalizeChecklistFormName(f));
+                                    return (
+                                        <div
+                                            key={f}
+                                            onClick={() => handleChecklistAdd(f)}
+                                            style={{ padding: '10px 14px', fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border)' }}
+                                            onMouseEnter={e => e.currentTarget.style.background = 'var(--surface-2)'}
+                                            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                                        >
+                                            <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 500 }}>{f}</span>
+                                            {alreadyIn && (
+                                                <span style={{ fontSize: 10, color: 'var(--text-muted)', background: 'var(--surface-3)', borderRadius: 4, padding: '2px 6px' }}>
+                                                    in checklist — will increment
+                                                </span>
+                                            )}
+                                        </div>
+                                    );
+                                })
+                            )}
+                        </div>
+                        <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end' }}>
+                            <button className="btn btn-secondary" onClick={() => { setShowAddFormModal(false); setNewFormName(''); }}>Cancel</button>
+                        </div>
+                    </div>
+                </div>
+                );
+            })()}
+            {showRemoveModal && pendingRemoveForm && (
+                <div style={{ position: 'fixed', inset: 0, background: 'rgba(17,24,39,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
+                    <div style={{ width: 420, maxWidth: '92vw', background: 'var(--surface-0)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: 24 }}>
+                        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>Remove Form</div>
+                        <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 20, lineHeight: 1.5 }}>
+                            You are removing <strong style={{ fontFamily: 'var(--font-mono)' }}>{pendingRemoveForm.form_name}</strong> from your check-list!<br />Please confirm.
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                            <button className="btn btn-secondary" style={{ minWidth: 64 }} onClick={() => { setShowRemoveModal(false); setPendingRemoveForm(null); }}>No</button>
+                            <button className="btn btn-primary" style={{ minWidth: 64, background: 'var(--red)', borderColor: 'var(--red)' }} onClick={() => handleChecklistRemove(pendingRemoveForm)}>Yes</button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
@@ -1651,13 +2003,41 @@ function ClientMatchModal({ modal, apiUrl, onDismiss, onAssociated }) {
                     </>
                 ) : (
                     <>
-                        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 16 }}>
-                            Add New Client — {identity.name}
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                            <div style={{ fontWeight: 700, fontSize: 13 }}>
+                                Add New Client — {identity.name}
+                            </div>
+                            <div style={{ display: 'flex', gap: 8 }}>
+                                <button
+                                    type="button"
+                                    className="btn"
+                                    onClick={() => setShowAddForm(false)}
+                                    style={{ fontSize: 12, padding: '6px 14px' }}
+                                >
+                                    ← Back
+                                </button>
+                                <button
+                                    type="submit"
+                                    form="add-client-form"
+                                    className="btn btn-primary"
+                                    style={{ fontSize: 12, padding: '6px 14px' }}
+                                >
+                                    Save Client
+                                </button>
+                            </div>
                         </div>
                         <AddClientForm
                             apiUrl={apiUrl}
                             initialData={initialData}
-                            onSuccess={() => onDismiss()}
+                            onSuccess={(newClientData) => {
+                                // If we have a new client ID, treat it the same as
+                                // "Associate" — triggers FDR derive for 1040 uploads.
+                                if (newClientData?.id && onAssociated) {
+                                    onAssociated(newClientData.id);
+                                } else {
+                                    onDismiss();
+                                }
+                            }}
                             onCancel={() => setShowAddForm(false)}
                         />
                     </>
@@ -1676,6 +2056,20 @@ function normalizeClientKey(name) {
         .trim();
 }
 
+function getClientDisplayName(client) {
+    const et = (client?.entity_type || '').toUpperCase();
+    if (et === 'INDIVIDUAL') {
+        const full = `${client?.first_name || ''} ${client?.last_name || ''}`.trim();
+        if (full) return full;
+    }
+    return (
+        client?.business_name
+        || client?.trust_name
+        || `${client?.first_name || ''} ${client?.last_name || ''}`.trim()
+        || 'Unknown'
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // PAGE: FILING PIPELINE  (live from files + results)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1686,6 +2080,7 @@ function PagePipeline({ files, results, apiUrl }) {
     const [ledgerRows, setLedgerRows] = useState([]);
     const [ledgerError, setLedgerError] = useState(null);
     const [expandedClients, setExpandedClients] = useState(new Set());
+    const [lifecycleStageByClient, setLifecycleStageByClient] = useState({});
 
     const toggleClient = (name) => setExpandedClients(prev => {
         const s = new Set(prev);
@@ -1742,6 +2137,31 @@ function PagePipeline({ files, results, apiUrl }) {
         fetchLedger();
         const interval = setInterval(fetchLedger, 10000);
         return () => clearInterval(interval);
+    }, [apiUrl]);
+
+    // Fetch client lifecycle stages for parent rows.
+    useEffect(() => {
+        const base = apiUrl !== undefined ? apiUrl : 'http://localhost:8000';
+        let cancelled = false;
+
+        async function fetchClients() {
+            try {
+                const res = await fetch(`${base}/clients?limit=500`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                const byName = {};
+                (Array.isArray(data) ? data : []).forEach((client) => {
+                    const name = getClientDisplayName(client);
+                    byName[normalizeClientKey(name)] = client?.lifecycle_stage || '';
+                });
+                if (!cancelled) setLifecycleStageByClient(byName);
+            } catch {
+                if (!cancelled) setLifecycleStageByClient({});
+            }
+        }
+
+        fetchClients();
+        return () => { cancelled = true; };
     }, [apiUrl]);
 
     // Build live rows from uploaded files
@@ -1923,24 +2343,6 @@ function PagePipeline({ files, results, apiUrl }) {
                     Object.entries(_groupMap).map(([nk, { displayName, rows }]) => [displayName, rows])
                 );
 
-                // Status priority for dominant status
-                const statusPriority = { exception: 3, processing: 2, approved: 1, pending: 0 };
-                const dominantStatus = (rows) => rows.reduce((best, r) =>
-                    (statusPriority[r.status] || 0) > (statusPriority[best] || 0) ? r.status : best, 'pending');
-
-                const avgConf = (rows) => {
-                    const vals = rows.filter(r => r.conf != null).map(r => r.conf);
-                    return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
-                };
-
-                const mostAdvancedStage = (rows) => {
-                    const order = ['Document Collection', 'AI Processing', 'Exception Review', 'CPA Review', 'Client Approval', 'Ready to E-File', 'Filed & Confirmed'];
-                    return rows.reduce((best, r) => {
-                        const bi = order.indexOf(best), ri = order.indexOf(r.stage);
-                        return ri > bi ? r.stage : best;
-                    }, rows[0]?.stage || '—');
-                };
-
                 const clientKeys = Object.keys(grouped);
 
                 return (
@@ -1957,13 +2359,7 @@ function PagePipeline({ files, results, apiUrl }) {
                             {clientKeys.length > 0 ? clientKeys.map((clientName) => {
                                 const rows = grouped[clientName];
                                 const isExpanded = expandedClients.has(clientName);
-                                const hasDB = rows.some(r => r.fromLedger);
-                                const conf = avgConf(rows);
-                                const confCls = conf != null ? (conf >= 90 ? 'high' : conf >= 75 ? 'medium' : 'low') : '';
-                                
-                                // Parent status
-                                const parentStatusMap = { rejected: 1, exception: 2, processing: 3, pending: 4, review: 5, approved: 6, filed: 7 };
-                                const parentStatus = rows.map(r => r.status).sort((a,b) => (parentStatusMap[a] || 9) - (parentStatusMap[b] || 9))[0] || '—';
+                                const parentStage = lifecycleStageByClient[normalizeClientKey(clientName)] || '—';
 
                                 return (
                                     <React.Fragment key={clientName}>
@@ -1984,18 +2380,13 @@ function PagePipeline({ files, results, apiUrl }) {
                                                 </span>
                                             </td>
                                             <td style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 500 }}>
-                                                {mostAdvancedStage(rows)}
+                                                {parentStage}
                                             </td>
                                             <td>
-                                                {(() => {
-                                                    const c = avgConf(rows);
-                                                    if (c == null) return <span style={{ color: 'var(--text-muted)' }}>—</span>;
-                                                    const cls = c >= 90 ? 'high' : c >= 75 ? 'med' : 'low';
-                                                    return <span className={`confidence-badge ${cls}`}>{c}%</span>;
-                                                })()}
+                                                <span style={{ color: 'var(--text-muted)' }}>—</span>
                                             </td>
                                             <td>
-                                                <StatusPill status={dominantStatus(rows)} />
+                                                <span style={{ color: 'var(--text-muted)' }}>—</span>
                                             </td>
                                         </tr>
 
@@ -2730,7 +3121,8 @@ function PageExceptions({ files, results, apiUrl, setResults }) {
                 fixes: [{ field, new_value: value }],
                 pdf_type: 'digital',
                 human_verified_fields: [field],
-                context: { filename },
+                document_id: results[filename]?.document_id || undefined,
+                context: { filename, document_id: results[filename]?.document_id || undefined },
             };
 
             const r = await fetch(`${baseUrl}/apply-fixes`, {
@@ -3131,8 +3523,33 @@ function PageIngestion({
     const dropRef = useRef(null);
     const [isDrag, setIsDrag] = useState(false);
     const [approving, setApproving] = useState(false);
+    const [savedSnap, setSavedSnap] = useState(false);  // brief "Saved ✓" feedback
 
     const activeResult = activeIngestionFile ? results[activeIngestionFile] : null;
+
+    // Helper: save the currently-visible extraction data to local_extraction/
+    const saveCurrentSnapshot = async (overrideData?: object) => {
+        const data = overrideData || activeResult;
+        if (!data || !activeIngestionFile) return;
+        try {
+            await fetch(`${apiUrl}/save-snapshot`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    document_id:         (data as any).document_id || undefined,
+                    form_type:           (data as any).form_type,
+                    filename:            activeIngestionFile,
+                    pdf_type:            (data as any).pdf_type || 'digital',
+                    data:                (data as any).data || (data as any).extracted_fields || {},
+                    exceptions:          (data as any).exceptions || [],
+                    document_confidence: (data as any).document_confidence ?? 1.0,
+                    field_confidence:    (data as any).field_confidence || {},
+                }),
+            });
+            setSavedSnap(true);
+            setTimeout(() => setSavedSnap(false), 2000);
+        } catch { /* non-blocking */ }
+    };
 
     // Queue table rows — time from uploadedAt, pages from extract result
     const queueRows = files.map(f => {
@@ -3170,18 +3587,16 @@ function PageIngestion({
                     fixes,
                     pdf_type: activeResult.pdf_type || 'digital',
                     human_verified_fields: humanVerifiedFields,
+                    document_id: activeResult?.document_id || undefined,
+                    context: { filename: activeIngestionFile, document_id: activeResult?.document_id || undefined },
                 }),
             });
             if (res.ok) {
                 const updated = await res.json();
-                setResults(prev => ({
-                    ...prev,
-                    [activeIngestionFile]: {
-                        ...prev[activeIngestionFile],
-                        ...updated,
-                        validation_complete: true,
-                    },
-                }));
+                const merged = { ...results[activeIngestionFile], ...updated, validation_complete: true };
+                setResults(prev => ({ ...prev, [activeIngestionFile]: merged }));
+                // Save the approved state immediately to local_extraction/
+                await saveCurrentSnapshot(merged);
             }
         } catch (e) {
             console.error('handleApproveAll failed:', e);
@@ -3207,18 +3622,16 @@ function PageIngestion({
                     fixes,
                     pdf_type: activeResult?.pdf_type || 'digital',
                     human_verified_fields: Object.keys(editedFields),
-                    context: { filename: activeIngestionFile },
+                    document_id: activeResult?.document_id || undefined,
+                    context: { filename: activeIngestionFile, document_id: activeResult?.document_id || undefined },
                 }),
             });
             if (res.ok) {
                 const updated = await res.json();
-                setResults(prev => ({
-                    ...prev,
-                    [activeIngestionFile]: {
-                        ...prev[activeIngestionFile],
-                        ...updated,
-                    },
-                }));
+                const merged = { ...results[activeIngestionFile], ...updated };
+                setResults(prev => ({ ...prev, [activeIngestionFile]: merged }));
+                // Save edited state immediately to local_extraction/
+                await saveCurrentSnapshot(merged);
             }
         } catch (e) {
             console.error('handleSaveEdits failed:', e);
@@ -3339,6 +3752,19 @@ function PageIngestion({
                                     </button>
                                 ))}
                                 <div style={{ flex: 1 }} />
+                                <button
+                                    onClick={() => saveCurrentSnapshot()}
+                                    title="Save JSON to local_extraction/"
+                                    style={{
+                                        padding: '4px 8px', background: savedSnap ? 'rgba(22,163,74,.12)' : 'none',
+                                        border: savedSnap ? '1px solid rgba(22,163,74,.3)' : '1px solid transparent',
+                                        borderRadius: 'var(--radius-sm)',
+                                        cursor: 'pointer', color: savedSnap ? 'var(--green)' : 'var(--text-muted)',
+                                        fontSize: 11, fontWeight: 600, transition: 'all .2s',
+                                        display: 'flex', alignItems: 'center', gap: 4,
+                                    }}>
+                                    {savedSnap ? '✓ Saved' : '💾 Save'}
+                                </button>
                                 <button style={{ padding: '4px 6px', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 14 }} onClick={() => setShowSensitive(!showSensitive)} title={showSensitive ? 'Hide sensitive' : 'Show sensitive'}>
                                     {showSensitive ? '🙈' : '👁'}
                                 </button>
@@ -4053,6 +4479,8 @@ export default function App() {
     const [savingReview, setSavingReview] = useState(false);
     const [globalError, setGlobalError] = useState(null);
     const [clientMatchModal, setClientMatchModal] = useState(null);
+    // Incremented after FDR derive completes — PageClients uses this to reload the checklist
+    const [checklistReloadTrigger, setChecklistReloadTrigger] = useState(0);
 
     // Session ID stored in sessionStorage
     const getSessionId = useCallback(() => sessionStorage.getItem('taxio_session_id'), []);
@@ -4193,6 +4621,22 @@ export default function App() {
 
                     // Update results with both extraction + validation in one setState
                     setResults(prev => ({ ...prev, [item.file.name]: finalData }));
+
+                    // Auto-save snapshot to local_extraction/ — no button needed
+                    fetch(`${apiUrl}/save-snapshot`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            document_id:         finalData.document_id || undefined,
+                            form_type:           formType,
+                            filename:            item.file.name,
+                            pdf_type:            finalData.pdf_type || d2.pdf_type,
+                            data:                finalData.data || {},
+                            exceptions:          finalData.exceptions || [],
+                            document_confidence: finalData.document_confidence ?? 1.0,
+                            field_confidence:    finalData.field_confidence || {},
+                        }),
+                    }).catch(() => {/* non-blocking */});
 
                     // Client auto-match: identify client from extracted fields
                     const identity = extractClientIdentity(finalData.data);
@@ -4408,7 +4852,7 @@ export default function App() {
                         modal={clientMatchModal}
                         apiUrl={apiUrl}
                         onDismiss={() => setClientMatchModal(null)}
-                        onAssociated={(clientId) => {
+                        onAssociated={async (clientId) => {
                             setResults(prev => ({
                                 ...prev,
                                 [clientMatchModal.fileName]: {
@@ -4418,6 +4862,44 @@ export default function App() {
                                 },
                             }));
                             setClientMatchModal(null);
+
+                            // Backfill client_id on ledger rows that were created without it
+                            if (clientMatchModal.identity?.name) {
+                                try {
+                                    await fetch(`${apiUrl}/ledger/associate-client`, {
+                                        method: 'PATCH',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                            client_id: clientId,
+                                            client_name: clientMatchModal.identity.name,
+                                            document_type: clientMatchModal.formType || undefined,
+                                        }),
+                                    });
+                                } catch { /* non-blocking */ }
+                            }
+
+                            // If this is a 1040, trigger FDR to derive the document checklist
+                            if ((clientMatchModal.formType || '').toUpperCase() === '1040') {
+                                try {
+                                    const fileResult = results[clientMatchModal.fileName] || {};
+                                    const extractedFields = fileResult.data || fileResult.extracted_fields || fileResult.raw_normalized_json || {};
+                                    const fieldConfidenceMap = fileResult.field_confidence || {};
+                                    const docType = (fileResult.pdf_type || 'digital') === 'digital' ? 'digital' : 'scanned';
+                                    const taxYear = extractedFields?.tax_year || new Date().getFullYear();
+                                    await fetch(`${apiUrl}/clients/${clientId}/document-checklist/derive-from-1040`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                            tax_year: typeof taxYear === 'number' ? taxYear : parseInt(taxYear) || new Date().getFullYear(),
+                                            extracted_fields: extractedFields,
+                                            field_confidence_map: fieldConfidenceMap,
+                                            document_type: docType,
+                                        }),
+                                    });
+                                    // Signal PageClients to reload the checklist
+                                    setChecklistReloadTrigger(t => t + 1);
+                                } catch { /* FDR is non-blocking; association still succeeded */ }
+                            }
                         }}
                     />
                 )}
@@ -4432,7 +4914,7 @@ export default function App() {
                     )}
 
                     {currentPage === 'dashboard' && <PageDashboard stats={stats} events={events} files={files} results={results} />}
-                    {currentPage === 'clients' && <PageClients lastExtraction={lastExtraction} apiUrl={apiUrl} onUpload={() => navigate('ingestion')} files={files} results={results} setResults={setResults} />}
+                    {currentPage === 'clients' && <PageClients lastExtraction={lastExtraction} apiUrl={apiUrl} onUpload={() => navigate('ingestion')} files={files} results={results} setResults={setResults} checklistReloadTrigger={checklistReloadTrigger} />}
                     {currentPage === 'pipeline' && <PagePipeline files={files} results={results} apiUrl={apiUrl} />}
                     {currentPage === 'exceptions' && <PageExceptions files={files} results={results} apiUrl={apiUrl} setResults={setResults} />}
                     {currentPage === 'documents' && <PageDocuments files={files} results={results} events={events} onDrop={handleDocDrop} fileInputRef={docFileRef} />}

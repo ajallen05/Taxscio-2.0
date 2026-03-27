@@ -1,0 +1,39 @@
+{
+  "document_id": "seed_1040_Linda_Zhao_TY2025",
+  "form_type": "1040",
+  "source_filename": "Linda_Zhao_1040_2025.pdf",
+  "pdf_type": "digital",
+  "extracted_at": "2026-03-27T20:47:48.312611+00:00",
+  "last_updated_at": "2026-03-27T21:13:21.695428+00:00",
+  "document_confidence": 0.97,
+  "data": {
+    "tax_year": 2025,
+    "filing_status": "Single",
+    "taxpayer_name": "Linda Zhao",
+    "taxpayer_ssn": "***-**-3301",
+    "wages_salaries_tips": 0,
+    "taxable_interest": 920,
+    "ordinary_dividends": 1440,
+    "qualified_dividends": 1440,
+    "ira_distributions": 22000,
+    "pensions_annuities": 18500,
+    "social_security_benefits": 24000,
+    "taxable_social_security": 20400,
+    "capital_gain_or_loss": 0,
+    "total_income": 63260,
+    "agi": 63260,
+    "standard_deduction": 16550,
+    "taxable_income": 46710,
+    "total_tax": 5440,
+    "federal_income_tax_withheld": 5800,
+    "refund_or_amount_owed": -360
+  },
+  "exceptions": [],
+  "field_confidence": {
+    "ira_distributions": 0.96,
+    "pensions_annuities": 0.95,
+    "social_security_benefits": 0.97,
+    "taxable_social_security": 0.94
+  },
+  "exception_audit": []
+}

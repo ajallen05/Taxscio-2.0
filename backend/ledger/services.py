@@ -50,6 +50,14 @@ def create_document(db, data):
         existing_ledger.version = new_version
         existing_ledger.upload_count = new_upload_count
         existing_ledger.content_hash = content_hash
+
+        # Backfill client_id if now known
+        if data.client_id and not existing_ledger.client_id:
+            existing_ledger.client_id = data.client_id
+
+        # Update extraction JSON path whenever a newer file is available
+        if data.extraction_json_path:
+            existing_ledger.extraction_json_path = data.extraction_json_path
         
         # Update client name if the existing one is just a DOC ID or "Unknown"
         if data.client_name and (existing_ledger.client_name.startswith("DOC-") or existing_ledger.client_name == "Unknown"):
@@ -73,6 +81,7 @@ def create_document(db, data):
                 version=new_version,
                 upload_count=new_upload_count,
                 content_hash=content_hash,
+                client_id=data.client_id,
                 client_name=data.client_name,
                 document_type=data.document_type,
                 provider=data.provider,
@@ -107,6 +116,7 @@ def create_document(db, data):
         version=1,
         upload_count=1,
         content_hash=content_hash,
+        client_id=data.client_id,
         client_name=data.client_name,
         document_type=data.document_type,
         provider=data.provider,
@@ -115,6 +125,7 @@ def create_document(db, data):
         tax_year=data.tax_year,
         stage=data.stage,
         status=final_status,
+        extraction_json_path=data.extraction_json_path,
         cpa=data.cpa,
         due_date=data.due_date,
         confidence_score=data.confidence_score,
@@ -123,6 +134,7 @@ def create_document(db, data):
 
     ledger = Ledger(
         document_id=document_id,
+        client_id=data.client_id,
         client_name=data.client_name,
         document_type=data.document_type,
         provider=data.provider,
@@ -134,6 +146,7 @@ def create_document(db, data):
         version=1,
         upload_count=1,
         content_hash=content_hash,
+        extraction_json_path=data.extraction_json_path,
         audit_trail=audit_trail,
         cpa=data.cpa,
         due_date=data.due_date,

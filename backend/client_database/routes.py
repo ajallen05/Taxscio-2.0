@@ -12,7 +12,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from .database import get_db
-from .schemas import EnumItem, AllEnumsResponse, ClientCreate, ClientOut
+from .schemas import (
+    EnumItem,
+    AllEnumsResponse,
+    ClientCreate,
+    ClientOut,
+    ChecklistFormAction,
+    ChecklistFormsResponse,
+    DeriveFrom1040Request,
+    DeriveFrom1040Response,
+)
 from . import services
 
 router = APIRouter(tags=["Client Database"])
@@ -67,3 +76,93 @@ def list_clients(
     db: Session = Depends(get_db),
 ):
     return services.list_clients(db, limit=limit, offset=offset)
+
+
+@router.get(
+    "/clients/{client_id}/document-checklist",
+    response_model=ChecklistFormsResponse,
+    summary="Client document checklist for tax year",
+)
+def get_document_checklist(
+    client_id: str,
+    tax_year: Optional[int] = Query(None, description="Target tax year"),
+    db: Session = Depends(get_db),
+):
+    try:
+        return services.get_client_document_checklist(db, client_id=client_id, tax_year=tax_year)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.post(
+    "/clients/{client_id}/document-checklist/forms",
+    response_model=ChecklistFormsResponse,
+    summary="Add or increment checklist form",
+)
+def add_document_checklist_form(
+    client_id: str,
+    payload: ChecklistFormAction,
+    tax_year: Optional[int] = Query(None, description="Target tax year"),
+    db: Session = Depends(get_db),
+):
+    services.increment_checklist_form(
+        db,
+        client_id=client_id,
+        form_name=payload.form_name,
+        tax_year=tax_year,
+    )
+    return services.get_client_document_checklist(db, client_id=client_id, tax_year=tax_year)
+
+
+@router.delete(
+    "/clients/{client_id}/document-checklist/forms/{form_name}",
+    response_model=ChecklistFormsResponse,
+    summary="Decrement or remove checklist form",
+)
+def remove_document_checklist_form(
+    client_id: str,
+    form_name: str,
+    tax_year: Optional[int] = Query(None, description="Target tax year"),
+    db: Session = Depends(get_db),
+):
+    services.decrement_checklist_form(
+        db,
+        client_id=client_id,
+        form_name=form_name,
+        tax_year=tax_year,
+    )
+    return services.get_client_document_checklist(db, client_id=client_id, tax_year=tax_year)
+
+
+@router.post(
+    "/clients/{client_id}/document-checklist/derive-from-1040",
+    response_model=DeriveFrom1040Response,
+    status_code=200,
+    summary="Run FDR on extracted 1040 JSON and populate the document checklist",
+    description=(
+        "Accepts the extracted 1040 JSON and per-field confidence map returned by /extract. "
+        "Runs all 7 FDR layers (pre-pass validator, tax year router, null classifier, "
+        "Tier 1 resolver, conflict resolver, Tier 2 resolver, checklist writer) and writes "
+        "results to client_document_checklist. "
+        "FDR output never overwrites manually-added (CPA) checklist rows."
+    ),
+)
+def derive_checklist_from_1040(
+    client_id: str,
+    payload:   DeriveFrom1040Request,
+    db: Session = Depends(get_db),
+):
+    try:
+        result = services.derive_from_1040(
+            db=db,
+            client_id=client_id,
+            tax_year=payload.tax_year,
+            extracted_fields=payload.extracted_fields,
+            field_confidence_map=payload.field_confidence_map,
+            document_type=payload.document_type,
+        )
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"FDR engine error: {exc}")

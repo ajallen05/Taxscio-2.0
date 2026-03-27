@@ -51,6 +51,12 @@ from backend.ledger.services import create_document as ledger_create_document
 from backend.client_database.database import init_db as client_init_db
 from backend.client_database.routes import router as client_router
 
+# ── Local extraction store ─────────────────────────────────────────────────────
+from backend.local_extraction_store import (
+    save_extraction as _les_save,
+    update_exceptions as _les_update_exceptions,
+)
+
 def _ledger_get_session():
     if SessionLocal is not None:
         return SessionLocal()
@@ -255,6 +261,7 @@ def _submit_to_ledger(
 
     data = LedgerDocumentCreate(
         client_name=client_name,
+        client_id=ctx.get("client_id") or None,     # link to client_database.clients.id
         document_type=form_type or "Unknown",
         provider="Taxscio AI",
         description=f"Auto-extracted: {filename}",
@@ -279,6 +286,48 @@ def _submit_to_ledger(
         return None
     finally:
         db.close()
+
+def _persist_extraction(
+    document_id: str,
+    form_type: str,
+    source_filename: str,
+    pdf_type: str | None,
+    final_response: dict,
+    integrity_data: dict,
+) -> str | None:
+    """
+    Save extraction result to backend/local_extraction/<document_id>.json.
+    Returns the relative path so it can be written back to the ledger row.
+    Non-blocking — returns None on any failure.
+    """
+    try:
+        path = _les_save(
+            document_id=document_id,
+            form_type=form_type,
+            source_filename=source_filename,
+            pdf_type=pdf_type,
+            data=final_response.get("data") or {},
+            exceptions=(
+                final_response.get("exceptions")
+                or integrity_data.get("exceptions")
+                or []
+            ),
+            document_confidence=(
+                final_response.get("document_confidence")
+                or integrity_data.get("document_confidence")
+                or 1.0
+            ),
+            field_confidence=(
+                final_response.get("field_confidence")
+                or integrity_data.get("field_confidence")
+                or {}
+            ),
+        )
+        return path
+    except Exception as exc:
+        log.warning("local_extraction_store: save failed (non-fatal): %s", exc)
+        return None
+
 
 def _get_escalated_exceptions(document_id: str) -> list[dict]:
     """Fetch escalated exceptions from the ledger audit trail to silence them."""
@@ -437,11 +486,13 @@ class ApplyFixesBody(BaseModel):
     pdf_type: str = "scanned"
     human_verified_fields: list[str] = []
     context: dict[str, Any] = {}
+    document_id: str | None = None   # if known, used to update the correct local extraction file
 
 
 class RevalidateBody(BaseModel):
     model_config = {"extra": "allow"}
     form_type: str | None = None
+    document_id: str | None = None   # if known, used to update the correct local extraction file
     data: Any = None
     pdf_type: str = "scanned"
     context: dict[str, Any] | None = {}
@@ -478,6 +529,72 @@ def health():
 @app.get("/forms")
 def get_forms_route():
     return {"forms": get_available_forms()}
+
+
+class SaveSnapshotBody(BaseModel):
+    model_config = {"extra": "allow"}
+    document_id:          str | None = None
+    form_type:            str | None = None
+    filename:             str | None = None
+    pdf_type:             str | None = None
+    data:                 Any        = None
+    exceptions:           list       = []
+    document_confidence:  float      = 1.0
+    field_confidence:     dict       = {}
+
+
+@app.post("/save-snapshot")
+def save_snapshot_route(body: SaveSnapshotBody):
+    """
+    Persists an extraction result to local_extraction/<doc_id>.json.
+    Always runs the data integrity engine so exceptions and confidence
+    are computed by the backend — not blindly trusted from the caller.
+    """
+    doc_id    = (body.document_id or "").strip() or body.filename or "unknown"
+    form_type = (body.form_type or "").strip()
+    data      = body.data or {}
+
+    # ── Run backend validation to compute authoritative exceptions ────────────
+    exceptions          = body.exceptions or []
+    document_confidence = body.document_confidence
+    field_confidence    = body.field_confidence or {}
+
+    if form_type and isinstance(data, dict) and data:
+        try:
+            val_result     = _data_integrity.validate(
+                form_type            = form_type,
+                extracted_fields     = data,
+                context              = {},
+                pdf_type             = body.pdf_type or "digital",
+            )
+            integrity_data      = val_result["data"]
+            exceptions          = integrity_data.get("exceptions") or []
+            document_confidence = integrity_data.get("document_confidence") or document_confidence
+            field_confidence    = integrity_data.get("field_confidence") or field_confidence
+            log.debug(
+                "save_snapshot_route: validated form=%s exceptions=%d confidence=%.3f",
+                form_type, len(exceptions), document_confidence,
+            )
+        except Exception as ve:
+            log.warning(
+                "save_snapshot_route: validation failed, using caller values: %s", ve
+            )
+
+    try:
+        path = _les_save(
+            document_id        = doc_id,
+            form_type          = form_type or "unknown",
+            source_filename    = body.filename or "unknown",
+            pdf_type           = body.pdf_type,
+            data               = data,
+            exceptions         = exceptions,
+            document_confidence= document_confidence,
+            field_confidence   = field_confidence,
+        )
+        return {"ok": True, "path": path, "exception_count": len(exceptions)}
+    except Exception as exc:
+        log.warning("save_snapshot_route failed: %s", exc)
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
 @app.post("/detect")
@@ -645,6 +762,9 @@ def extract(
 
         # ── OPTIONAL: fields_only — skip validation (Pass 1 of batch loop) ──
         if is_fields_only:
+            # Do NOT save here — exceptions and confidence are not computed yet.
+            # The frontend fires POST /save-snapshot after /validate completes,
+            # which writes a single accurate DOC-id keyed file.
             return {
                 "form_type":           form_type,
                 "pdf_type":            pdf_type,
@@ -714,6 +834,66 @@ def extract(
         if doc_id:
             final_response["document_id"] = doc_id
 
+        # ── Persist extraction to local_extraction/ and store path in ledger ──
+        _json_path = _persist_extraction(
+            document_id=doc_id or f"{form_type}_{file.filename or 'unknown'}",
+            form_type=form_type,
+            source_filename=file.filename or "unknown",
+            pdf_type=pdf_type,
+            final_response=final_response,
+            integrity_data=integrity_data,
+        )
+        if _json_path and doc_id:
+            # Patch the ledger row with the file path (non-blocking)
+            try:
+                _json_path_db = _ledger_get_session()
+                if _json_path_db:
+                    from backend.ledger.models import Ledger as _LedgerModel
+                    _row = _json_path_db.query(_LedgerModel).filter(
+                        _LedgerModel.document_id == doc_id
+                    ).first()
+                    if _row:
+                        _row.extraction_json_path = _json_path
+                        _json_path_db.commit()
+                    _json_path_db.close()
+            except Exception as _pe:
+                log.warning("local_extraction_store: ledger path patch failed: %s", _pe)
+
+        # ── FDR: auto-trigger Form Dependency Resolver for 1040 uploads ──────
+        # Runs in the same request so the extracted JSON (in-memory) is available.
+        # Requires client_id and tax_year in the context JSON sent by the frontend.
+        # If either is missing or the run fails, extraction succeeds unchanged.
+        if form_type.upper() == "1040":
+            _fdr_client_id = context_dict.get("client_id")
+            _fdr_tax_year  = context_dict.get("tax_year") or normalized.get("tax_year")
+            if _fdr_client_id and _fdr_tax_year:
+                try:
+                    from backend.fdr.fdr_engine import run as _fdr_run
+                    from backend.client_database.database import SessionLocal as _ClientSession
+                    if _ClientSession is not None:
+                        _fdr_db = _ClientSession()
+                        try:
+                            _fdr_result = _fdr_run(
+                                extracted_json=normalized,
+                                confidence_map=pipeline["confidence_result"].get("field_scores", {}),
+                                doc_type=pdf_type or "digital",
+                                tax_year=_fdr_tax_year,
+                                client_id=_fdr_client_id,
+                                db=_fdr_db,
+                            )
+                            final_response["fdr_summary"] = _fdr_result["fdr_summary"]
+                            log.info(
+                                "FDR auto-trigger complete: client=%s year=%s det=%d inf=%d unres=%d",
+                                _fdr_client_id, _fdr_tax_year,
+                                _fdr_result["fdr_summary"]["deterministic_count"],
+                                _fdr_result["fdr_summary"]["inferred_count"],
+                                _fdr_result["fdr_summary"]["unresolvable_count"],
+                            )
+                        finally:
+                            _fdr_db.close()
+                except Exception as _fdr_exc:
+                    log.warning("FDR auto-trigger failed (non-fatal): %s", _fdr_exc)
+
         # Debug dump to disk
         try:
             with open("latest_response.json", "w", encoding="utf-8") as dr:
@@ -774,7 +954,7 @@ def validate_route(req: Request, body: ValidateBody):
                 status="VALIDATED"
             )
 
-        return {
+        validate_response = {
             "form_type":             form_type,
             "document_id":          doc_id,
             "pdf_type":              body.pdf_type,
@@ -791,6 +971,33 @@ def validate_route(req: Request, body: ValidateBody):
             "review_fields":         integrity_data.get("review_fields", []),
             "human_verified_fields": integrity_data.get("human_verified_fields", body.human_verified_fields),
         }
+
+        # ── Persist / refresh local extraction file and store path in ledger ──
+        if doc_id or body.filename:
+            _json_path = _persist_extraction(
+                document_id=doc_id or body.filename,
+                form_type=form_type,
+                source_filename=body.filename or "unknown",
+                pdf_type=body.pdf_type,
+                final_response=validate_response,
+                integrity_data=integrity_data,
+            )
+            if _json_path and doc_id:
+                try:
+                    _vdb = _ledger_get_session()
+                    if _vdb:
+                        from backend.ledger.models import Ledger as _LedgerModel
+                        _vrow = _vdb.query(_LedgerModel).filter(
+                            _LedgerModel.document_id == doc_id
+                        ).first()
+                        if _vrow:
+                            _vrow.extraction_json_path = _json_path
+                            _vdb.commit()
+                        _vdb.close()
+                except Exception as _vpe:
+                    log.warning("local_extraction_store: validate path patch failed: %s", _vpe)
+
+        return validate_response
 
     except Exception as e:
         return JSONResponse(
@@ -939,7 +1146,7 @@ def apply_fixes_route(req: Request, body: ApplyFixesBody):
                 status="VALIDATED"
             )
 
-        return {
+        apply_fixes_response = {
             "form_type":             form_type,
             "document_id":          doc_id,
             "pdf_type":              body.pdf_type,
@@ -964,6 +1171,20 @@ def apply_fixes_route(req: Request, body: ApplyFixesBody):
             "human_verified_fields": integrity_data.get("human_verified_fields", body.human_verified_fields),
             "fixes_applied":         integrity_data.get("fixes_applied", len(body.fixes)),
         }
+
+        # Persist updated data + refreshed exceptions to local_extraction/
+        _af_doc_id = body.document_id or body.context.get("document_id") or doc_id or body.context.get("filename")
+        if _af_doc_id:
+            _persist_extraction(
+                document_id=_af_doc_id,
+                form_type=form_type,
+                source_filename=body.context.get("filename") or "unknown",
+                pdf_type=body.pdf_type,
+                final_response=apply_fixes_response,
+                integrity_data=integrity_data,
+            )
+
+        return apply_fixes_response
 
     except Exception as e:
         return JSONResponse(
@@ -1010,7 +1231,7 @@ def revalidate_route(req: Request, body: RevalidateBody):
                 status="VALIDATED"
             )
 
-        return {
+        revalidate_response = {
             "form_type":             form_type,
             "document_id":          doc_id,
             "pdf_type":              body.pdf_type,
@@ -1034,6 +1255,20 @@ def revalidate_route(req: Request, body: RevalidateBody):
             "review_fields":         integrity_data.get("review_fields", []),
             "human_verified_fields": integrity_data.get("human_verified_fields", body.human_verified_fields),
         }
+
+        # Persist updated data + refreshed exceptions to local_extraction/
+        _rv_doc_id = body.document_id or body.context.get("document_id") or doc_id or body.context.get("filename")
+        if _rv_doc_id:
+            _persist_extraction(
+                document_id=_rv_doc_id,
+                form_type=form_type,
+                source_filename=body.context.get("filename") or "unknown",
+                pdf_type=body.pdf_type,
+                final_response=revalidate_response,
+                integrity_data=integrity_data,
+            )
+
+        return revalidate_response
 
     except Exception as e:
         return JSONResponse(
