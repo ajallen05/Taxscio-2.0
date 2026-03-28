@@ -7,8 +7,8 @@ import uuid
 from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 from backend.ledger.database import SessionLocal as LedgerSessionLocal
-from backend.ledger.models import Ledger
-from .models import EnumMaster, Client, ClientDocumentChecklist
+from backend.ledger.models import Ledger, ClientDocumentChecklist
+from .models import EnumMaster, Client
 from .schemas import ClientCreate
 
 
@@ -167,7 +167,12 @@ _CHECKLIST_EXCLUDED_FORMS: set[str] = {
 }
 
 
-def get_client_document_checklist(db: Session, client_id: str, tax_year: Optional[int] = None) -> Dict[str, Any]:
+def get_client_document_checklist(
+    db: Session,
+    client_id: str,
+    tax_year: Optional[int] = None,
+    ldb: Optional[Session] = None,
+) -> Dict[str, Any]:
     client = db.query(Client).filter(Client.id == client_id).first()
     if not client:
         raise ValueError("Client not found")
@@ -179,11 +184,25 @@ def get_client_document_checklist(db: Session, client_id: str, tax_year: Optiona
     prior_year_counts: Dict[str, int] = {}
     has_error: Dict[str, bool] = {}
 
-    # Start with explicitly managed checklist rows (excluding the return forms themselves).
-    rows = db.query(ClientDocumentChecklist).filter(
-        ClientDocumentChecklist.client_id == client_id,
-        ClientDocumentChecklist.tax_year == target_year,
-    ).all()
+    # Checklist rows live in the ledger DB; open a session if one wasn't passed in.
+    _close_ldb = False
+    if ldb is None and LedgerSessionLocal is not None:
+        ldb = LedgerSessionLocal()
+        _close_ldb = True
+
+    rows = []
+    if ldb is not None:
+        try:
+            rows = ldb.query(ClientDocumentChecklist).filter(
+                ClientDocumentChecklist.client_id == client_id,
+                ClientDocumentChecklist.tax_year == target_year,
+            ).all()
+        except Exception:
+            pass
+        finally:
+            if _close_ldb:
+                ldb.close()
+                ldb = None
     for row in rows:
         key = _norm_form_name(row.form_name)
         if key in _CHECKLIST_EXCLUDED_FORMS:
@@ -273,9 +292,10 @@ def derive_from_1040(
     extracted_fields: Dict[str, Any],
     field_confidence_map: Dict[str, Any],
     document_type:   str,
+    ldb:             Optional["Session"] = None,
 ) -> Dict[str, Any]:
     """
-    Run the FDR engine and write results to client_document_checklist.
+    Run the FDR engine and write results to client_document_checklist (ledger DB).
 
     This is the service backing POST /clients/{id}/document-checklist/derive-from-1040.
 
@@ -288,66 +308,111 @@ def derive_from_1040(
     if not client:
         raise ValueError("Client not found")
 
-    result = fdr_run(
-        extracted_json=extracted_fields,
-        confidence_map={k: float(v) for k, v in (field_confidence_map or {}).items()},
-        doc_type=document_type,
-        tax_year=tax_year,
-        client_id=client_id,
-        db=db,
-    )
+    # Open a ledger DB session for the checklist writer if one wasn't provided.
+    _close_ldb = False
+    if ldb is None and LedgerSessionLocal is not None:
+        ldb = LedgerSessionLocal()
+        _close_ldb = True
 
-    checklist = get_client_document_checklist(db, client_id=client_id, tax_year=tax_year)
+    try:
+        result = fdr_run(
+            extracted_json=extracted_fields,
+            confidence_map={k: float(v) for k, v in (field_confidence_map or {}).items()},
+            doc_type=document_type,
+            tax_year=tax_year,
+            client_id=client_id,
+            db=ldb,   # FDR/checklist_writer now writes to ledger DB
+        )
+        checklist = get_client_document_checklist(db, client_id=client_id, tax_year=tax_year, ldb=ldb)
+    finally:
+        if _close_ldb and ldb is not None:
+            ldb.close()
+
     return {
         "forms":       checklist["forms"],
         "fdr_summary": result["fdr_summary"],
     }
 
 
-def increment_checklist_form(db: Session, client_id: str, form_name: str, tax_year: Optional[int] = None) -> None:
+def increment_checklist_form(
+    db: Session,
+    client_id: str,
+    form_name: str,
+    tax_year: Optional[int] = None,
+    ldb: Optional[Session] = None,
+) -> None:
+    """Add or increment a checklist form entry in the ledger DB."""
     target_year = int(tax_year) if tax_year else _current_tax_year()
     norm_form = _norm_form_name(form_name)
     if not norm_form:
         raise ValueError("Form name is required")
 
-    row = db.query(ClientDocumentChecklist).filter(
-        ClientDocumentChecklist.client_id == client_id,
-        ClientDocumentChecklist.tax_year == target_year,
-        ClientDocumentChecklist.form_name == norm_form,
-    ).first()
-    if row:
-        row.expected_count = int(row.expected_count or 1) + 1
-        # CPA manually adding → mark as manual so FDR won't overwrite it later
-        row.source = "manual"
-    else:
-        row = ClientDocumentChecklist(
-            id=str(uuid.uuid4()),
-            client_id=client_id,
-            tax_year=target_year,
-            form_name=norm_form,
-            expected_count=1,
-            source="manual",
-        )
-        db.add(row)
-    db.commit()
+    _close_ldb = False
+    if ldb is None and LedgerSessionLocal is not None:
+        ldb = LedgerSessionLocal()
+        _close_ldb = True
+    if ldb is None:
+        raise RuntimeError("Ledger DB not configured")
+
+    try:
+        row = ldb.query(ClientDocumentChecklist).filter(
+            ClientDocumentChecklist.client_id == client_id,
+            ClientDocumentChecklist.tax_year == target_year,
+            ClientDocumentChecklist.form_name == norm_form,
+        ).first()
+        if row:
+            row.expected_count = int(row.expected_count or 1) + 1
+            row.source = "manual"
+        else:
+            row = ClientDocumentChecklist(
+                id=str(uuid.uuid4()),
+                client_id=client_id,
+                tax_year=target_year,
+                form_name=norm_form,
+                expected_count=1,
+                source="manual",
+            )
+            ldb.add(row)
+        ldb.commit()
+    finally:
+        if _close_ldb:
+            ldb.close()
 
 
-def decrement_checklist_form(db: Session, client_id: str, form_name: str, tax_year: Optional[int] = None) -> None:
+def decrement_checklist_form(
+    db: Session,
+    client_id: str,
+    form_name: str,
+    tax_year: Optional[int] = None,
+    ldb: Optional[Session] = None,
+) -> None:
+    """Remove or decrement a checklist form entry in the ledger DB."""
     target_year = int(tax_year) if tax_year else _current_tax_year()
     norm_form = _norm_form_name(form_name)
     if not norm_form:
         raise ValueError("Form name is required")
 
-    row = db.query(ClientDocumentChecklist).filter(
-        ClientDocumentChecklist.client_id == client_id,
-        ClientDocumentChecklist.tax_year == target_year,
-        ClientDocumentChecklist.form_name == norm_form,
-    ).first()
-    if not row:
+    _close_ldb = False
+    if ldb is None and LedgerSessionLocal is not None:
+        ldb = LedgerSessionLocal()
+        _close_ldb = True
+    if ldb is None:
         return
-    next_count = int(row.expected_count or 1) - 1
-    if next_count <= 0:
-        db.delete(row)
-    else:
-        row.expected_count = next_count
-    db.commit()
+
+    try:
+        row = ldb.query(ClientDocumentChecklist).filter(
+            ClientDocumentChecklist.client_id == client_id,
+            ClientDocumentChecklist.tax_year == target_year,
+            ClientDocumentChecklist.form_name == norm_form,
+        ).first()
+        if not row:
+            return
+        next_count = int(row.expected_count or 1) - 1
+        if next_count <= 0:
+            ldb.delete(row)
+        else:
+            row.expected_count = next_count
+        ldb.commit()
+    finally:
+        if _close_ldb:
+            ldb.close()

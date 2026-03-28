@@ -12,6 +12,19 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from .database import get_db
+from backend.ledger.database import SessionLocal as LedgerSessionLocal
+
+
+def get_ledger_db():
+    """FastAPI dependency that yields a ledger DB session."""
+    if LedgerSessionLocal is None:
+        yield None
+        return
+    db = LedgerSessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 from .schemas import (
     EnumItem,
     AllEnumsResponse,
@@ -87,9 +100,10 @@ def get_document_checklist(
     client_id: str,
     tax_year: Optional[int] = Query(None, description="Target tax year"),
     db: Session = Depends(get_db),
+    ldb: Session = Depends(get_ledger_db),
 ):
     try:
-        return services.get_client_document_checklist(db, client_id=client_id, tax_year=tax_year)
+        return services.get_client_document_checklist(db, client_id=client_id, tax_year=tax_year, ldb=ldb)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -104,14 +118,16 @@ def add_document_checklist_form(
     payload: ChecklistFormAction,
     tax_year: Optional[int] = Query(None, description="Target tax year"),
     db: Session = Depends(get_db),
+    ldb: Session = Depends(get_ledger_db),
 ):
     services.increment_checklist_form(
         db,
         client_id=client_id,
         form_name=payload.form_name,
         tax_year=tax_year,
+        ldb=ldb,
     )
-    return services.get_client_document_checklist(db, client_id=client_id, tax_year=tax_year)
+    return services.get_client_document_checklist(db, client_id=client_id, tax_year=tax_year, ldb=ldb)
 
 
 @router.delete(
@@ -124,14 +140,16 @@ def remove_document_checklist_form(
     form_name: str,
     tax_year: Optional[int] = Query(None, description="Target tax year"),
     db: Session = Depends(get_db),
+    ldb: Session = Depends(get_ledger_db),
 ):
     services.decrement_checklist_form(
         db,
         client_id=client_id,
         form_name=form_name,
         tax_year=tax_year,
+        ldb=ldb,
     )
-    return services.get_client_document_checklist(db, client_id=client_id, tax_year=tax_year)
+    return services.get_client_document_checklist(db, client_id=client_id, tax_year=tax_year, ldb=ldb)
 
 
 @router.post(
@@ -151,6 +169,7 @@ def derive_checklist_from_1040(
     client_id: str,
     payload:   DeriveFrom1040Request,
     db: Session = Depends(get_db),
+    ldb: Session = Depends(get_ledger_db),
 ):
     try:
         result = services.derive_from_1040(
@@ -160,6 +179,7 @@ def derive_checklist_from_1040(
             extracted_fields=payload.extracted_fields,
             field_confidence_map=payload.field_confidence_map,
             document_type=payload.document_type,
+            ldb=ldb,
         )
         return result
     except ValueError as exc:

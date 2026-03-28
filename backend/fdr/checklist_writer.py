@@ -1,7 +1,7 @@
 """
 backend/fdr/checklist_writer.py  —  Layer 7: Checklist Writer
 
-Persists FDR-derived entries into client_document_checklist (PostgreSQL).
+Persists FDR-derived entries into client_document_checklist (ledger DB).
 
 Merge behaviour:
   - FDR output NEVER overwrites a row where source = "manual"
@@ -9,9 +9,7 @@ Merge behaviour:
   - FDR updates confidence/trigger on existing FDR-originated rows
   - The source column ("fdr_derived" | "manual") is the guard
 
-The four new columns written here (confidence, trigger_line, trigger_value,
-source) must already exist on the table — the DB migration in
-client_database/database.py handles this on startup.
+The table and columns are created by the migration in ledger/database.py.
 """
 from __future__ import annotations
 
@@ -21,7 +19,7 @@ from typing import List
 
 from sqlalchemy.orm import Session
 
-from backend.client_database.models import ClientDocumentChecklist
+from backend.ledger.models import ClientDocumentChecklist
 from backend.fdr.tier1_resolver import ChecklistEntry
 
 log = logging.getLogger("Taxscio.fdr.checklist_writer")
