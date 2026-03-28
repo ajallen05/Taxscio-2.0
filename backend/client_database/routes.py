@@ -26,6 +26,7 @@ def get_ledger_db():
     finally:
         db.close()
 from .schemas import (
+    AnswerQuestionRequest,
     EnumItem,
     AllEnumsResponse,
     ClientCreate,
@@ -180,9 +181,46 @@ def derive_checklist_from_1040(
             field_confidence_map=payload.field_confidence_map,
             document_type=payload.document_type,
             ldb=ldb,
+            document_confidence=payload.document_confidence,  # Fix 5
         )
         return result
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"FDR engine error: {exc}")
+
+
+@router.post(
+    "/clients/{client_id}/document-checklist/answer-question",
+    response_model=ChecklistFormsResponse,
+    status_code=200,
+    summary="Resolve an ask_client question and write the resulting forms to the checklist",
+    description=(
+        "Accepts a question_id and the label of the selected option. "
+        "Looks up the question in client_checklist_questions, resolves the chosen option "
+        "to a list of forms, writes those as deterministic checklist rows, and marks the "
+        "question as resolved. Returns the updated checklist."
+    ),
+)
+def answer_checklist_question(
+    client_id: str,
+    payload:   AnswerQuestionRequest,
+    db: Session = Depends(get_db),
+    ldb: Session = Depends(get_ledger_db),
+):
+    if not payload.tax_year:
+        raise HTTPException(status_code=422, detail="tax_year is required")
+    try:
+        result = services.answer_checklist_question(
+            db=db,
+            client_id=client_id,
+            question_id=payload.question_id,
+            selected_option=payload.selected_option,
+            tax_year=payload.tax_year,
+            ldb=ldb,
+        )
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Answer question error: {exc}")

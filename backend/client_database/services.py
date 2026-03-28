@@ -7,7 +7,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 from backend.ledger.database import SessionLocal as LedgerSessionLocal
-from backend.ledger.models import Ledger, ClientDocumentChecklist
+from backend.ledger.models import Ledger, ClientDocumentChecklist, ClientChecklistQuestion
 from .models import EnumMaster, Client
 from .schemas import ClientCreate
 
@@ -254,15 +254,21 @@ def get_client_document_checklist(
 
     # Build FDR metadata map from checklist rows.
     fdr_meta: Dict[str, Dict] = {}
+    has_unverified_data = False
     for row in rows:
         key = _norm_form_name(row.form_name)
         if key in _CHECKLIST_EXCLUDED_FORMS:
             continue
+        unverified = getattr(row, "derived_from_unverified_data", "false") == "true"
+        if unverified:
+            has_unverified_data = True
         fdr_meta[key] = {
             "confidence":    getattr(row, "confidence",    None),
             "trigger_line":  getattr(row, "trigger_line",  None),
             "trigger_value": getattr(row, "trigger_value", None),
             "source":        getattr(row, "source",        "manual"),
+            "document_class": getattr(row, "document_class", "filing_form"),
+            "derived_from_unverified_data": unverified,
         }
 
     forms = []
@@ -280,9 +286,46 @@ def get_client_document_checklist(
             "trigger_line":     meta.get("trigger_line"),
             "trigger_value":    meta.get("trigger_value"),
             "source":           meta.get("source", "manual"),
+            "document_class":   meta.get("document_class", "filing_form"),
+            "derived_from_unverified_data": meta.get("derived_from_unverified_data", False),
         })
 
-    return {"tax_year": target_year, "forms": forms, "previous_year": previous_year}
+    # Fetch open questions from ledger DB (Fix 6)
+    questions = []
+    _q_ldb_close = False
+    _q_ldb = ldb
+    if _q_ldb is None and LedgerSessionLocal is not None:
+        _q_ldb = LedgerSessionLocal()
+        _q_ldb_close = True
+    if _q_ldb is not None:
+        try:
+            q_rows = _q_ldb.query(ClientChecklistQuestion).filter(
+                ClientChecklistQuestion.client_id == client_id,
+                ClientChecklistQuestion.tax_year  == target_year,
+            ).all()
+            for qr in q_rows:
+                questions.append({
+                    "question_id":   qr.question_id,
+                    "trigger_line":  qr.trigger_line,
+                    "trigger_value": qr.trigger_value,
+                    "question":      qr.question_text,
+                    "options":       qr.options_json or [],
+                    "status":        qr.status,
+                    "selected_option": qr.selected_option,
+                })
+        except Exception:
+            pass
+        finally:
+            if _q_ldb_close:
+                _q_ldb.close()
+
+    return {
+        "tax_year":            target_year,
+        "forms":               forms,
+        "previous_year":       previous_year,
+        "questions":           questions,
+        "has_unverified_data": has_unverified_data,
+    }
 
 
 def derive_from_1040(
@@ -293,6 +336,7 @@ def derive_from_1040(
     field_confidence_map: Dict[str, Any],
     document_type:   str,
     ldb:             Optional["Session"] = None,
+    document_confidence: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Run the FDR engine and write results to client_document_checklist (ledger DB).
@@ -314,6 +358,11 @@ def derive_from_1040(
         ldb = LedgerSessionLocal()
         _close_ldb = True
 
+    # Fix 5: detect low-confidence / unverified extraction data
+    unverified_data = (
+        document_confidence is not None and document_confidence < 0.70
+    )
+
     try:
         result = fdr_run(
             extracted_json=extracted_fields,
@@ -321,7 +370,8 @@ def derive_from_1040(
             doc_type=document_type,
             tax_year=tax_year,
             client_id=client_id,
-            db=ldb,   # FDR/checklist_writer now writes to ledger DB
+            db=ldb,              # FDR/checklist_writer writes to ledger DB
+            unverified_data=unverified_data,
         )
         checklist = get_client_document_checklist(db, client_id=client_id, tax_year=tax_year, ldb=ldb)
     finally:
@@ -329,9 +379,84 @@ def derive_from_1040(
             ldb.close()
 
     return {
-        "forms":       checklist["forms"],
-        "fdr_summary": result["fdr_summary"],
+        "forms":               checklist["forms"],
+        "questions":           checklist.get("questions", []),
+        "has_unverified_data": checklist.get("has_unverified_data", False),
+        "fdr_summary":         result["fdr_summary"],
     }
+
+
+def answer_checklist_question(
+    db:              "Session",
+    client_id:       str,
+    question_id:     str,
+    selected_option: str,
+    tax_year:        int,
+    ldb:             Optional["Session"] = None,
+) -> Dict[str, Any]:
+    """
+    Fix 6c: Resolve an ask_client question by writing the selected option's forms
+    to client_document_checklist, then marking the question as resolved.
+    Returns the updated checklist (same shape as get_client_document_checklist).
+    """
+    from backend.fdr.checklist_writer import write as cw_write
+    from backend.fdr.tier1_resolver import ChecklistEntry
+
+    _close_ldb = False
+    if ldb is None and LedgerSessionLocal is not None:
+        ldb = LedgerSessionLocal()
+        _close_ldb = True
+
+    try:
+        if ldb is None:
+            raise ValueError("Ledger DB not available")
+
+        question_row = ldb.query(ClientChecklistQuestion).filter(
+            ClientChecklistQuestion.client_id   == client_id,
+            ClientChecklistQuestion.tax_year    == tax_year,
+            ClientChecklistQuestion.question_id == question_id,
+        ).first()
+        if question_row is None:
+            raise ValueError(f"Question '{question_id}' not found for client {client_id}, year {tax_year}")
+
+        # Find the chosen option in options_json
+        options = question_row.options_json or []
+        chosen = next(
+            (o for o in options if o.get("label", "").lower() == selected_option.lower()),
+            None,
+        )
+        if chosen is None:
+            raise ValueError(f"Option '{selected_option}' not found in question '{question_id}'")
+
+        resolves_to: list = chosen.get("resolves_to", [])
+
+        # Write resolved forms to checklist (deterministic)
+        if resolves_to:
+            entries = [
+                ChecklistEntry(
+                    form_name=f.upper(),
+                    confidence="deterministic",
+                    trigger_line=question_row.trigger_line,
+                    trigger_value=question_row.trigger_value,
+                    action="add",
+                    reason=f"Resolved from question '{question_id}' answer: {selected_option}",
+                )
+                for f in resolves_to
+            ]
+            cw_write(db=ldb, client_id=client_id, tax_year=tax_year, entries=entries)
+
+        # Mark question resolved
+        question_row.status          = "resolved"
+        question_row.selected_option = selected_option
+        question_row.resolved_forms  = resolves_to
+        ldb.commit()
+
+        checklist = get_client_document_checklist(db, client_id=client_id, tax_year=tax_year, ldb=ldb)
+    finally:
+        if _close_ldb and ldb is not None:
+            ldb.close()
+
+    return checklist
 
 
 def increment_checklist_form(

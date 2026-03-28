@@ -608,6 +608,10 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results, setResu
     const [checklistPreviousYear, setChecklistPreviousYear] = useState<number | null>(null);
     const [checklistLoading, setChecklistLoading] = useState(false);
     const [checklistError, setChecklistError] = useState('');
+    const [checklistQuestions, setChecklistQuestions] = useState<any[]>([]);
+    const [checklistHasUnverifiedData, setChecklistHasUnverifiedData] = useState(false);
+    const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
+    const [questionSubmitting, setQuestionSubmitting] = useState<Record<string, boolean>>({});
     const [showAddFormModal, setShowAddFormModal] = useState(false);
     const [showRemoveModal, setShowRemoveModal] = useState(false);
     const [pendingRemoveForm, setPendingRemoveForm] = useState(null);
@@ -903,13 +907,19 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results, setResu
             const data = await res.json();
             if (res.status === 404) {
                 setChecklistRows([]);
+                setChecklistQuestions([]);
+                setChecklistHasUnverifiedData(false);
                 return;
             }
             if (!res.ok) throw new Error(data?.detail || data?.error || `HTTP ${res.status}`);
             setChecklistRows(Array.isArray(data?.forms) ? data.forms : []);
             setChecklistPreviousYear(data?.previous_year ?? null);
+            setChecklistQuestions(Array.isArray(data?.questions) ? data.questions : []);
+            setChecklistHasUnverifiedData(!!data?.has_unverified_data);
         } catch (err) {
             setChecklistRows([]);
+            setChecklistQuestions([]);
+            setChecklistHasUnverifiedData(false);
             setChecklistError(normalizeChecklistErrorMessage(err) || 'Failed to load checklist.');
         } finally {
             setChecklistLoading(false);
@@ -1496,125 +1506,233 @@ function PageClients({ lastExtraction, apiUrl, onUpload, files, results, setResu
                                         ? 'FDR-derived from 1040. Confirmed = line value present. Inferred = probable. Ask = needs confirmation.'
                                         : 'Upload and associate a 1040 to auto-derive required forms, or add manually.'}
                                 </div>
-                                <div style={{ overflowX: 'auto' }}>
-                                <table className="data-table" style={{ marginBottom: 0, minWidth: 380 }}>
-                                    <thead>
-                                        <tr>
-                                            <th>Forms</th>
-                                            <th style={{ textAlign: 'center' }}>Count</th>
-                                            <th>Status</th>
-                                            <th>Action</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {checklistLoading ? (
-                                            <tr><td colSpan={4} style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: 18 }}>Loading checklist...</td></tr>
-                                        ) : checklistRows.length === 0 ? (
-                                            <tr><td colSpan={4} style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: 18 }}>
+
+                                {/* Fix 5c: unverified data banner */}
+                                {checklistHasUnverifiedData && (
+                                    <div style={{
+                                        marginBottom: 10, fontSize: 11, fontWeight: 600,
+                                        padding: '8px 12px', borderRadius: 8,
+                                        background: 'rgba(245,158,11,.12)',
+                                        border: '1px solid rgba(245,158,11,.4)',
+                                        color: 'var(--amber)',
+                                        display: 'flex', alignItems: 'flex-start', gap: 8,
+                                    }}>
+                                        <span style={{ fontSize: 14, lineHeight: 1 }}>⚠</span>
+                                        <span>
+                                            This checklist was generated from a return with unresolved blocking exceptions.
+                                            Review and resolve exceptions before relying on this checklist.
+                                        </span>
+                                    </div>
+                                )}
+
+                                {/* Fix 6d: pending ask_client questions */}
+                                {(() => {
+                                    const pendingQs = checklistQuestions.filter(q => q.status !== 'resolved');
+                                    if (pendingQs.length === 0) return null;
+                                    return (
+                                        <div style={{
+                                            marginBottom: 14, border: '1px solid var(--border)',
+                                            borderRadius: 8, overflow: 'hidden',
+                                        }}>
+                                            <div style={{
+                                                padding: '8px 12px', fontSize: 11, fontWeight: 700,
+                                                background: 'var(--surface-2)', borderBottom: '1px solid var(--border)',
+                                                color: 'var(--text-muted)',
+                                                textTransform: 'uppercase', letterSpacing: '.06em',
+                                            }}>
+                                                We need more information
+                                            </div>
+                                            {pendingQs.map(q => (
+                                                <div key={q.question_id} style={{
+                                                    padding: '10px 12px',
+                                                    borderBottom: '1px solid var(--border)',
+                                                    background: 'var(--surface-1)',
+                                                }}>
+                                                    <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: 'var(--text)' }}>
+                                                        {q.question}
+                                                    </div>
+                                                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                                                        <select
+                                                            style={{
+                                                                fontSize: 11, padding: '4px 8px', borderRadius: 6,
+                                                                border: '1px solid var(--border)',
+                                                                background: 'var(--surface-2)', color: 'var(--text)',
+                                                                flex: 1, minWidth: 200,
+                                                            }}
+                                                            value={questionAnswers[q.question_id] || ''}
+                                                            onChange={e => setQuestionAnswers(prev => ({
+                                                                ...prev, [q.question_id]: e.target.value,
+                                                            }))}
+                                                        >
+                                                            <option value="">Select an option…</option>
+                                                            {(q.options || []).map(opt => (
+                                                                <option key={opt.label} value={opt.label}>{opt.label}</option>
+                                                            ))}
+                                                        </select>
+                                                        <button
+                                                            className="btn btn-primary"
+                                                            style={{ fontSize: 11, padding: '4px 10px' }}
+                                                            disabled={!questionAnswers[q.question_id] || questionSubmitting[q.question_id]}
+                                                            onClick={async () => {
+                                                                const sel = questionAnswers[q.question_id];
+                                                                if (!sel || !client?.fullData?.id) return;
+                                                                setQuestionSubmitting(prev => ({ ...prev, [q.question_id]: true }));
+                                                                try {
+                                                                    await fetch(`${apiUrl}/clients/${client.fullData.id}/document-checklist/answer-question`, {
+                                                                        method: 'POST',
+                                                                        headers: { 'Content-Type': 'application/json' },
+                                                                        body: JSON.stringify({
+                                                                            question_id: q.question_id,
+                                                                            selected_option: sel,
+                                                                            tax_year: selectedTaxYear,
+                                                                        }),
+                                                                    });
+                                                                    loadChecklist();
+                                                                } catch { /* non-blocking */ } finally {
+                                                                    setQuestionSubmitting(prev => ({ ...prev, [q.question_id]: false }));
+                                                                }
+                                                            }}
+                                                        >
+                                                            {questionSubmitting[q.question_id] ? 'Saving…' : 'Confirm'}
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    );
+                                })()}
+
+                                {/* Fix 4d: split checklist into two sections */}
+                                {(() => {
+                                    const _EXCLUDE = ['1040','1040-SR','1040-NR','1040-NR-EZ','1040-X','1040-ES','1040-V'];
+                                    const visibleRows = checklistRows.filter(row =>
+                                        !_EXCLUDE.includes((row.form_name || '').toUpperCase())
+                                    );
+                                    const filingForms  = visibleRows.filter(r => (r.document_class || 'filing_form') === 'filing_form');
+                                    const sourceDocs   = visibleRows.filter(r => r.document_class === 'source_document');
+
+                                    const renderTable = (rows, sectionLabel) => {
+                                        if (checklistLoading) {
+                                            return (
+                                                <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: '14px 0' }}>
+                                                    Loading checklist...
+                                                </div>
+                                            );
+                                        }
+                                        if (rows.length === 0 && !checklistLoading) return null;
+                                        return (
+                                            <div style={{ marginBottom: 16 }}>
+                                                <div style={{
+                                                    fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+                                                    letterSpacing: '.07em', color: 'var(--text-muted)',
+                                                    marginBottom: 6, paddingLeft: 2,
+                                                }}>
+                                                    {sectionLabel}
+                                                </div>
+                                                <div style={{ overflowX: 'auto' }}>
+                                                <table className="data-table" style={{ marginBottom: 0, minWidth: 380 }}>
+                                                    <thead>
+                                                        <tr>
+                                                            <th>Form</th>
+                                                            <th style={{ textAlign: 'center' }}>Count</th>
+                                                            <th>Status</th>
+                                                            <th>Action</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        {rows.map(row => {
+                                                            const dotColor = row.confidence === 'deterministic'
+                                                                ? '#10b981'
+                                                                : row.confidence === 'inferred'
+                                                                    ? '#f59e0b'
+                                                                    : '#9ca3af';
+                                                            const dotTitle = row.confidence === 'deterministic'
+                                                                ? `Confirmed — ${row.trigger_line} = ${row.trigger_value}`
+                                                                : row.confidence === 'inferred'
+                                                                    ? `Inferred — ${row.trigger_line} = ${row.trigger_value}`
+                                                                    : row.confidence === 'unresolvable'
+                                                                        ? 'Needs client confirmation'
+                                                                        : 'Manually added';
+                                                            const pyCount = row.prior_year_count || 0;
+                                                            const pyYear  = checklistPreviousYear;
+                                                            return (
+                                                                <tr key={row.form_name}>
+                                                                    <td style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                                                        <span title={dotTitle} style={{
+                                                                            width: 7, height: 7, borderRadius: '50%',
+                                                                            background: dotColor, flexShrink: 0, cursor: 'default',
+                                                                        }} />
+                                                                        <span className="mono" style={{ fontWeight: 500 }}>{row.form_name}</span>
+                                                                        {pyCount > 0 && pyYear && (
+                                                                            <span title={`Filed ${pyCount}× in ${pyYear}`} style={{
+                                                                                fontSize: 9, fontWeight: 700, padding: '1px 5px',
+                                                                                borderRadius: 4, background: 'rgba(156,163,175,.18)',
+                                                                                color: 'var(--text-muted)', letterSpacing: '.02em', whiteSpace: 'nowrap',
+                                                                            }}>
+                                                                                {pyYear}↑{pyCount > 1 ? `×${pyCount}` : ''}
+                                                                            </span>
+                                                                        )}
+                                                                    </td>
+                                                                    <td style={{ textAlign: 'center', fontWeight: 700, fontSize: 13 }}>{row.count ?? 1}</td>
+                                                                    <td>
+                                                                        <span style={{
+                                                                            fontSize: 11, fontWeight: 700,
+                                                                            display: 'inline-flex', alignItems: 'center',
+                                                                            padding: '3px 8px', borderRadius: 999,
+                                                                            border: '1px solid var(--border)',
+                                                                            background: row.status === 'Error' ? 'rgba(239,68,68,.12)'
+                                                                                : row.status === 'Pending' ? 'rgba(156,163,175,.14)'
+                                                                                : row.status === 'Partial' ? 'rgba(245,158,11,.15)'
+                                                                                : 'rgba(16,185,129,.15)',
+                                                                            color: row.status === 'Error' ? 'var(--red)'
+                                                                                : row.status === 'Pending' ? 'var(--text-muted)'
+                                                                                : row.status === 'Partial' ? 'var(--amber)'
+                                                                                : 'var(--green)',
+                                                                        }}>
+                                                                            {row.status}
+                                                                        </span>
+                                                                    </td>
+                                                                    <td style={{ display: 'flex', gap: 6, whiteSpace: 'nowrap' }}>
+                                                                        <button className="btn btn-primary" style={{ fontSize: 11, padding: '4px 9px' }} onClick={() => handleChecklistAdd(row.form_name)}>Add</button>
+                                                                        <button
+                                                                            className="btn btn-secondary"
+                                                                            style={{ fontSize: 11, padding: '4px 9px', color: 'var(--red)', borderColor: 'rgba(239,68,68,.35)' }}
+                                                                            onClick={() => {
+                                                                                if ((row.count || 1) <= 1) { setPendingRemoveForm(row); setShowRemoveModal(true); }
+                                                                                else handleChecklistRemove(row);
+                                                                            }}
+                                                                        >Remove</button>
+                                                                    </td>
+                                                                </tr>
+                                                            );
+                                                        })}
+                                                    </tbody>
+                                                </table>
+                                                </div>
+                                            </div>
+                                        );
+                                    };
+
+                                    if (checklistLoading) {
+                                        return <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: '14px 0' }}>Loading checklist...</div>;
+                                    }
+                                    if (visibleRows.length === 0) {
+                                        return (
+                                            <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: 18 }}>
                                                 {has1040Document
                                                     ? 'Upload detected but checklist not yet derived. Re-associate the 1040 to auto-populate, or use Add Form.'
                                                     : 'No forms yet. Upload a 1040 in Ingestion Hub and associate it with this client to auto-populate, or use Add Form.'}
-                                            </td></tr>
-                                        ) : checklistRows
-                                            .filter(row => {
-                                                // Never show the return form itself in the supporting-docs checklist
-                                                const n = (row.form_name || '').toUpperCase();
-                                                return !['1040','1040-SR','1040-NR','1040-NR-EZ','1040-X','1040-ES','1040-V'].includes(n);
-                                            })
-                                            .map((row) => {
-                                            // Confidence dot: green = deterministic, amber = inferred, grey = unresolvable/manual
-                                            const dotColor = row.confidence === 'deterministic'
-                                                ? '#10b981'
-                                                : row.confidence === 'inferred'
-                                                    ? '#f59e0b'
-                                                    : '#9ca3af';
-                                            const dotTitle = row.confidence === 'deterministic'
-                                                ? `Confirmed — ${row.trigger_line} = ${row.trigger_value}`
-                                                : row.confidence === 'inferred'
-                                                    ? `Inferred — ${row.trigger_line} = ${row.trigger_value}`
-                                                    : row.confidence === 'unresolvable'
-                                                        ? 'Needs client confirmation'
-                                                        : 'Manually added';
-                                            const pyCount = row.prior_year_count || 0;
-                                            const pyYear  = checklistPreviousYear;
-                                            return (
-                                            <tr key={row.form_name}>
-                                                <td style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                                    <span
-                                                        title={dotTitle}
-                                                        style={{
-                                                            width: 7, height: 7, borderRadius: '50%',
-                                                            background: dotColor, flexShrink: 0,
-                                                            cursor: 'default',
-                                                        }}
-                                                    />
-                                                    <span className="mono" style={{ fontWeight: 500 }}>{row.form_name}</span>
-                                                    {pyCount > 0 && pyYear && (
-                                                        <span title={`Filed ${pyCount}× in ${pyYear}`} style={{
-                                                            fontSize: 9, fontWeight: 700, padding: '1px 5px',
-                                                            borderRadius: 4, background: 'rgba(156,163,175,.18)',
-                                                            color: 'var(--text-muted)', letterSpacing: '.02em',
-                                                            whiteSpace: 'nowrap',
-                                                        }}>
-                                                            {pyYear}↑{pyCount > 1 ? `×${pyCount}` : ''}
-                                                        </span>
-                                                    )}
-                                                </td>
-                                                <td style={{ textAlign: 'center', fontWeight: 700, fontSize: 13 }}>
-                                                    {row.count ?? 1}
-                                                </td>
-                                                <td>
-                                                    <span
-                                                        style={{
-                                                            fontSize: 11,
-                                                            fontWeight: 700,
-                                                            display: 'inline-flex',
-                                                            alignItems: 'center',
-                                                            padding: '3px 8px',
-                                                            borderRadius: 999,
-                                                            border: '1px solid var(--border)',
-                                                            background: row.status === 'Error'
-                                                                ? 'rgba(239,68,68,.12)'
-                                                                : row.status === 'Pending'
-                                                                    ? 'rgba(156,163,175,.14)'
-                                                                    : row.status === 'Partial'
-                                                                        ? 'rgba(245,158,11,.15)'
-                                                                        : 'rgba(16,185,129,.15)',
-                                                            color: row.status === 'Error'
-                                                                ? 'var(--red)'
-                                                                : row.status === 'Pending'
-                                                                    ? 'var(--text-muted)'
-                                                                    : row.status === 'Partial'
-                                                                        ? 'var(--amber)'
-                                                                        : 'var(--green)',
-                                                        }}
-                                                    >
-                                                        {row.status}
-                                                    </span>
-                                                </td>
-                                                <td style={{ display: 'flex', gap: 6, whiteSpace: 'nowrap' }}>
-                                                    <button className="btn btn-primary" style={{ fontSize: 11, padding: '4px 9px' }} onClick={() => handleChecklistAdd(row.form_name)}>Add</button>
-                                                    <button
-                                                        className="btn btn-secondary"
-                                                        style={{ fontSize: 11, padding: '4px 9px', color: 'var(--red)', borderColor: 'rgba(239,68,68,.35)' }}
-                                                        onClick={() => {
-                                                            if ((row.count || 1) <= 1) {
-                                                                setPendingRemoveForm(row);
-                                                                setShowRemoveModal(true);
-                                                            } else {
-                                                                handleChecklistRemove(row);
-                                                            }
-                                                        }}
-                                                    >
-                                                        Remove
-                                                    </button>
-                                                </td>
-                                            </tr>
+                                            </div>
                                         );
-                                        })}
-                                    </tbody>
-                                </table>
-                                </div>
+                                    }
+                                    return (
+                                        <>
+                                            {renderTable(filingForms,  'Filing forms — attached to the return')}
+                                            {renderTable(sourceDocs,   'Source documents — collect from client')}
+                                        </>
+                                    );
+                                })()}
+
                                 {checklistError && (
                                     <div style={{ marginTop: 10, fontSize: 11, color: 'var(--red)', background: 'rgba(239,68,68,.08)', border: '1px solid rgba(239,68,68,.25)', borderRadius: 8, padding: '6px 8px' }}>
                                         {checklistError}
@@ -5031,6 +5149,7 @@ export default function App() {
                                             extracted_fields: extractedFields,
                                             field_confidence_map: fieldConfidenceMap,
                                             document_type: docType,
+                                            document_confidence: fileResult.document_confidence ?? null,
                                         }),
                                     });
                                     setChecklistReloadTrigger(t => t + 1);

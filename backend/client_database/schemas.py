@@ -119,16 +119,40 @@ class ChecklistFormItem(BaseModel):
     trigger_line:  Optional[str] = None  # flat field that caused this flag
     trigger_value: Optional[str] = None  # value of that field at FDR run time
     source:        Optional[str] = None  # "fdr_derived" | "manual"
+    # Fix 4c: document classification
+    document_class: Optional[str] = "filing_form"   # "filing_form" | "source_document"
+    # Fix 5: unverified data flag
+    derived_from_unverified_data: Optional[bool] = False
+
+
+class ChecklistQuestion(BaseModel):
+    """Fix 6c: structured ask_client question from FDR Layer 6."""
+    question_id:   str
+    trigger_line:  Optional[str] = None
+    trigger_value: Optional[str] = None
+    question:      str
+    options:       List[Dict[str, Any]]   # [{label, resolves_to}]
+    status:        str = "pending_client_response"  # or "resolved"
+    selected_option: Optional[str] = None
 
 
 class ChecklistFormsResponse(BaseModel):
-    tax_year:      int
-    previous_year: Optional[int] = None
-    forms:         List[ChecklistFormItem]
+    tax_year:               int
+    previous_year:          Optional[int] = None
+    forms:                  List[ChecklistFormItem]
+    questions:              List[ChecklistQuestion] = []
+    has_unverified_data:    bool = False   # Fix 5: any row has derived_from_unverified_data
 
 
 class ChecklistFormAction(BaseModel):
     form_name: str
+
+
+class AnswerQuestionRequest(BaseModel):
+    """Fix 6c: body for POST .../answer-question"""
+    question_id:     str
+    selected_option: str
+    tax_year:        Optional[int] = None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -136,11 +160,13 @@ class ChecklistFormAction(BaseModel):
 # ─────────────────────────────────────────────────────────────
 
 class DeriveFrom1040Request(BaseModel):
-    tax_year:           int
-    extracted_fields:   Dict[str, Any]        # full nested 1040 JSON from /extract
-    field_confidence_map: Dict[str, float]    # per-field scores from scorer.py
-    document_type:      Literal["digital", "scanned"] = "digital"
-    session_id:         Optional[str] = None  # optional audit trail reference
+    tax_year:             int
+    extracted_fields:     Dict[str, Any]        # full nested 1040 JSON from /extract
+    field_confidence_map: Dict[str, float]      # per-field scores from scorer.py
+    document_type:        Literal["digital", "scanned"] = "digital"
+    session_id:           Optional[str] = None  # optional audit trail reference
+    # Fix 5: overall document confidence score; FDR flags rows if < 0.7
+    document_confidence:  Optional[float] = None
 
 
 class FDRSummary(BaseModel):
@@ -153,5 +179,7 @@ class FDRSummary(BaseModel):
 
 
 class DeriveFrom1040Response(BaseModel):
-    forms:       List[ChecklistFormItem]
-    fdr_summary: FDRSummary
+    forms:               List[ChecklistFormItem]
+    fdr_summary:         FDRSummary
+    questions:           List[ChecklistQuestion] = []
+    has_unverified_data: bool = False

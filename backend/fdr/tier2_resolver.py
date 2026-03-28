@@ -1,5 +1,5 @@
 """
-backend/fdr/tier2_resolver.py  —  Layer 6: Tier 2 Resolver (Partial — Immediate)
+backend/fdr/tier2_resolver.py  —  Layer 6: Tier 2 Resolver
 
 Runs after the conflict resolver.  Two jobs:
 
@@ -11,14 +11,17 @@ Runs after the conflict resolver.  Two jobs:
      before they can be confirmed present or absent.
      (K-1s, HSA forms, ACA forms, etc.)
 
-Deferred items are marked with action="ask_client" and confidence="unresolvable".
-When a supporting schedule later arrives, a partial re-run evaluates only the
-deferred items without re-running Tier 1.
+Fix 6: line_8_other_income no longer emits speculative 1099-NEC/K/MISC rows.
+  Instead, a structured ask_client question is returned in the `questions` list
+  so the CPA can confirm the income source via POST .../answer-question.
+
+Return value:
+  (entries: List[ChecklistEntry], questions: List[dict])
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from backend.fdr.tier1_resolver import ChecklistEntry
 
@@ -44,7 +47,7 @@ def run(
     flat_data:     Dict[str, Any],
     null_map:      dict,
     tax_year:      int,
-) -> List[ChecklistEntry]:
+) -> Tuple[List[ChecklistEntry], List[dict]]:
     """
     Augment the Tier 1 entry list with Tier 2 inferred and always-ask items.
 
@@ -55,9 +58,12 @@ def run(
         tax_year:      Integer tax year.
 
     Returns:
-        Combined list of entries (Tier 1 + Tier 2).
+        (entries, questions)
+          entries  — combined ChecklistEntry list (Tier 1 + Tier 2)
+          questions — structured ask_client question dicts (Fix 6)
     """
     by_form: Dict[str, ChecklistEntry] = {e.form_name: e for e in tier1_entries}
+    questions: List[dict] = []
 
     # ── Conditional Tier 2 ────────────────────────────────────────────────────
 
@@ -83,8 +89,41 @@ def run(
                 reason="Amount from Schedule 3 — 1095-A required if marketplace health plan was used",
             )
 
-    # line_8 (other income) → Form 8962 / 1095-A also possible via Schedule 1 line 26
-    # (already covered by Tier 1 inferred 1099-NEC/K/MISC; no additional entry needed here)
+    # ── Fix 6: line_8 other income — structured ask_client question ───────────
+    line8 = _f(flat_data, "line_8_other_income")
+    if line8 and line8 > 0:
+        questions.append({
+            "question_id":   "line8_income_source",
+            "trigger_line":  "line_8_other_income",
+            "trigger_value": str(int(line8)) if line8 == int(line8) else str(line8),
+            "question": (
+                f"What is the source of the ${int(line8):,} reported on Line 8 (Other Income)?"
+            ),
+            "options": [
+                {
+                    "label": "Freelance / self-employment",
+                    "resolves_to": ["1099-NEC", "SCHEDULE-C"],
+                },
+                {
+                    "label": "Platform / payment app payments",
+                    "resolves_to": ["1099-K"],
+                },
+                {
+                    "label": "Rent income",
+                    "resolves_to": ["1099-MISC", "SCHEDULE-E"],
+                },
+                {
+                    "label": "Prize, award, or other misc",
+                    "resolves_to": ["1099-MISC"],
+                },
+                {
+                    "label": "Already reported on another form",
+                    "resolves_to": [],
+                },
+            ],
+            "status": "pending_client_response",
+        })
+        log.debug("FDR tier2: emitted ask_client question for line_8=%.2f", line8)
 
     # ── Unconditional Tier 2 (always-ask) ─────────────────────────────────────
     for form_name, reason in _ALWAYS_ASK:
@@ -98,7 +137,7 @@ def run(
                 reason=reason,
             )
 
-    return list(by_form.values())
+    return list(by_form.values()), questions
 
 
 def _f(flat_data: Dict[str, Any], key: str) -> Optional[float]:

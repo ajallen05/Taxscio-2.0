@@ -44,6 +44,7 @@ def run(
     tax_year:          Optional[int],
     client_id:         Optional[str] = None,
     db=None,
+    unverified_data:   bool = False,
 ) -> Dict[str, Any]:
     """
     Run the full 7-layer FDR pipeline.
@@ -120,7 +121,7 @@ def run(
     )
 
     # ── Layer 6: Tier 2 Resolver ─────────────────────────────────────────────
-    final_entries = tier2_resolver.run(
+    final_entries, questions = tier2_resolver.run(
         tier1_entries=resolved_entries,
         flat_data=flat_data,
         null_map=null_map,
@@ -135,9 +136,20 @@ def run(
                 client_id=client_id,
                 tax_year=tax_year,
                 entries=final_entries,
+                unverified_data=unverified_data,
             )
         except Exception as exc:
             log.error("Checklist write failed (non-fatal): %s", exc)
+        if questions:
+            try:
+                checklist_writer.write_questions(
+                    db=db,
+                    client_id=client_id,
+                    tax_year=tax_year,
+                    questions=questions,
+                )
+            except Exception as exc:
+                log.error("Questions write failed (non-fatal): %s", exc)
 
     # ── Build summary ─────────────────────────────────────────────────────────
     det   = sum(1 for e in final_entries if e.confidence == "deterministic")
@@ -150,7 +162,8 @@ def run(
     )
 
     return {
-        "entries": final_entries,
+        "entries":   final_entries,
+        "questions": questions,
         "fdr_summary": {
             "deterministic_count":   det,
             "inferred_count":        inf,

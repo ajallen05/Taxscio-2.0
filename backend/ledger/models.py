@@ -54,12 +54,49 @@ class ClientDocumentChecklist(Base):
     # source: "fdr_derived" = written by FDR engine; "manual" = added by CPA
     source        = Column(String(50),  nullable=False, default="manual")
 
+    # Fix 4a: "filing_form" = filed with IRS; "source_document" = collected from client
+    document_class = Column(String(50), nullable=False, default="filing_form")
+
+    # Fix 5: flag when FDR ran on data with blocking/critical exceptions
+    derived_from_unverified_data = Column(String(5), nullable=False, default="false")
+
     created_at = Column(DateTime(timezone=True), nullable=False, default=_now)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=_now, onupdate=_now)
 
     __table_args__ = (
         UniqueConstraint("client_id", "tax_year", "form_name", name="uq_ledger_doc_checklist"),
         Index("ix_ledger_doc_checklist_client_year", "client_id", "tax_year"),
+    )
+
+
+class ClientChecklistQuestion(Base):
+    """
+    Fix 6b: Structured ask_client questions emitted by FDR Layer 6 (Tier 2 Resolver).
+    Stores one question per ambiguous income source (e.g. line_8 other income)
+    until the CPA answers it via POST .../answer-question.
+    """
+    __tablename__ = "client_checklist_questions"
+
+    id            = Column(String,  primary_key=True, default=_uuid)
+    client_id     = Column(String,  nullable=False, index=True)
+    tax_year      = Column(Integer, nullable=False)
+    question_id   = Column(String(100), nullable=False)   # e.g. "line8_income_source"
+    trigger_line  = Column(String(200), nullable=True)
+    trigger_value = Column(String(500), nullable=True)
+    question_text = Column(Text,    nullable=False)
+    options_json  = Column(JSON,    nullable=False)        # List[{label, resolves_to}]
+    # status: "pending_client_response" | "resolved"
+    status          = Column(String(50),  nullable=False, default="pending_client_response")
+    selected_option = Column(String(200), nullable=True)
+    resolved_forms  = Column(JSON,        nullable=True)   # forms added when resolved
+
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_now)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_now, onupdate=_now)
+
+    __table_args__ = (
+        UniqueConstraint("client_id", "tax_year", "question_id",
+                         name="uq_checklist_question"),
+        Index("ix_checklist_question_client_year", "client_id", "tax_year"),
     )
 
 

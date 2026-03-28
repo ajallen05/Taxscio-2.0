@@ -14,6 +14,12 @@ Flat field names follow flatten_for_validation() output from 1040.json:
                       line_28_additional_child_tax_credit, line_29_american_opportunity_credit
   filing_status     → single, married_filing_jointly, head_of_household, ...
   digital_assets    → received_or_sold_digital_assets
+  foreign           → foreign_country, foreign_province (Schedule B Part III triggers)
+
+NOTE on line_8 (other income):
+  1099-NEC, 1099-K, 1099-MISC are NOT emitted speculatively from line_8.
+  Instead, tier2_resolver.py emits a structured ask_client question so the CPA
+  can confirm the income source and only then add the correct form(s).
 """
 from __future__ import annotations
 
@@ -78,6 +84,55 @@ RULES: list[FormRule] = [
         null_behavior="skip",
     ),
 
+    # ── Fix 2: Schedule B — interest + dividends threshold ────────────────────
+    # IRS: Schedule B required if total taxable interest or ordinary dividends > $1,500.
+    # Two separate rules; the highest-confidence entry wins per form (both deterministic).
+    FormRule(
+        form_name="SCHEDULE-B",
+        rule_type="A",
+        confidence_tier=1,
+        field="line_2b_taxable_interest",
+        condition_op=">",
+        condition_val=1500,
+        output_confidence="deterministic",
+        trigger_template="Taxable interest on line 2b exceeds $1,500 — Schedule B required",
+        null_behavior="skip",
+    ),
+    FormRule(
+        form_name="SCHEDULE-B",
+        rule_type="A",
+        confidence_tier=1,
+        field="line_3b_ordinary_dividends",
+        condition_op=">",
+        condition_val=1500,
+        output_confidence="deterministic",
+        trigger_template="Ordinary dividends on line 3b exceed $1,500 — Schedule B required",
+        null_behavior="skip",
+    ),
+    # Schedule B — foreign account / foreign trust (Part III)
+    FormRule(
+        form_name="SCHEDULE-B",
+        rule_type="D",
+        confidence_tier=1,
+        field="foreign_country",
+        condition_op="truthy",
+        condition_val=None,
+        output_confidence="deterministic",
+        trigger_template="Foreign country/account detected — Schedule B Part III required",
+        null_behavior="skip",
+    ),
+    FormRule(
+        form_name="SCHEDULE-B",
+        rule_type="D",
+        confidence_tier=1,
+        field="foreign_province",
+        condition_op="truthy",
+        condition_val=None,
+        output_confidence="deterministic",
+        trigger_template="Foreign province/account detected — Schedule B Part III required",
+        null_behavior="skip",
+    ),
+
     # 1099-DIV
     FormRule(
         form_name="1099-DIV",
@@ -130,7 +185,9 @@ RULES: list[FormRule] = [
         null_behavior="skip",
     ),
 
-    # Form 8949 + Schedule D — capital gain or loss
+    # ── Fix 1: Form 8949 + Schedule D — capital gain or loss ──────────────────
+    # Both forms are required whenever line 7 is non-zero. Two separate rules so
+    # each gets its own checklist row with the correct document_class assignment.
     FormRule(
         form_name="FORM-8949",
         rule_type="A",
@@ -139,9 +196,20 @@ RULES: list[FormRule] = [
         condition_op="!=",
         condition_val=0,
         output_confidence="deterministic",
-        trigger_template="Capital gain/loss on line 7 — Form 8949 and Schedule D required",
+        trigger_template="Capital gain/loss on line 7 — Form 8949 required (transaction detail)",
         null_behavior="flag",
         notes="null_behavior=flag: ambiguous null on scanned doc still raises verify flag",
+    ),
+    FormRule(
+        form_name="SCHEDULE-D",
+        rule_type="A",
+        confidence_tier=1,
+        field="line_7_capital_gain_loss",
+        condition_op="!=",
+        condition_val=0,
+        output_confidence="deterministic",
+        trigger_template="Capital gain/loss on line 7 — Schedule D required (summary of all capital transactions)",
+        null_behavior="flag",
     ),
 
     # Form 8949 — digital assets checkbox (Type D)
@@ -211,45 +279,6 @@ RULES: list[FormRule] = [
         null_behavior="skip",
     ),
 
-    # 1099-NEC — contractor income inferred from line 8 (other income → Schedule 1)
-    FormRule(
-        form_name="1099-NEC",
-        rule_type="A",
-        confidence_tier=1,
-        field="line_8_other_income",
-        condition_op=">",
-        condition_val=0,
-        output_confidence="inferred",
-        trigger_template="Other income on line 8 — 1099-NEC likely (self-employment/contractor); upload Schedule 1 to confirm",
-        null_behavior="skip",
-    ),
-
-    # 1099-K — payment platform income inferred from line 8
-    FormRule(
-        form_name="1099-K",
-        rule_type="A",
-        confidence_tier=1,
-        field="line_8_other_income",
-        condition_op=">",
-        condition_val=0,
-        output_confidence="inferred",
-        trigger_template="Other income on line 8 — 1099-K possible (third-party payment networks); upload Schedule 1 to confirm",
-        null_behavior="skip",
-    ),
-
-    # 1099-MISC — miscellaneous income inferred from line 8
-    FormRule(
-        form_name="1099-MISC",
-        rule_type="A",
-        confidence_tier=1,
-        field="line_8_other_income",
-        condition_op=">",
-        condition_val=0,
-        output_confidence="inferred",
-        trigger_template="Other income on line 8 — 1099-MISC possible (rents, royalties, prizes); upload Schedule 1 to confirm",
-        null_behavior="skip",
-    ),
-
     # 1099-B — broker proceeds inferred from capital gain line
     FormRule(
         form_name="1099-B",
@@ -263,8 +292,62 @@ RULES: list[FormRule] = [
         null_behavior="skip",
     ),
 
+    # ── Fix 3: Schedule 3 ────────────────────────────────────────────────────
+    # Amount from Schedule 3 on line 20 (credits) or line 31 (other payments)
+    # confirms that Schedule 3 was filed; the CPA must collect it.
+    FormRule(
+        form_name="SCHEDULE-3",
+        rule_type="A",
+        confidence_tier=1,
+        field="line_20_amount_from_schedule_3",
+        condition_op=">",
+        condition_val=0,
+        output_confidence="deterministic",
+        trigger_template="Amount from Schedule 3 on line 20 — Schedule 3 (Additional Credits) required",
+        null_behavior="skip",
+    ),
+    FormRule(
+        form_name="SCHEDULE-3",
+        rule_type="A",
+        confidence_tier=1,
+        field="line_31_amount_from_schedule_3",
+        condition_op=">",
+        condition_val=0,
+        output_confidence="deterministic",
+        trigger_template="Amount from Schedule 3 on line 31 — Schedule 3 (Additional Payments) required",
+        null_behavior="skip",
+    ),
+
+    # ── Fix 3: Schedule 2 ────────────────────────────────────────────────────
+    # Amount from Schedule 2 on line 17 (additional tax) or line 23 (other taxes)
+    FormRule(
+        form_name="SCHEDULE-2",
+        rule_type="A",
+        confidence_tier=1,
+        field="line_17_amount_from_schedule_2",
+        condition_op=">",
+        condition_val=0,
+        output_confidence="deterministic",
+        trigger_template="Amount from Schedule 2 on line 17 — Schedule 2 (Additional Taxes) required",
+        null_behavior="skip",
+    ),
+    FormRule(
+        form_name="SCHEDULE-2",
+        rule_type="A",
+        confidence_tier=1,
+        field="line_23_other_taxes",
+        condition_op=">",
+        condition_val=0,
+        output_confidence="deterministic",
+        trigger_template="Other taxes on line 23 — Schedule 2 required",
+        null_behavior="skip",
+    ),
+
 ]
+# NOTE on line_8_other_income (Fix 6):
+#   1099-NEC, 1099-K, and 1099-MISC are NOT added speculatively from line 8.
+#   Instead, tier2_resolver.py emits a structured ask_client question so the CPA
+#   can confirm the income source before the correct forms are added to the checklist.
+#
 # Note: FORM-8962 and 1095-A are handled unconditionally in tier2_resolver._ALWAYS_ASK
 # because ACA enrollment cannot be determined from Form 1040 alone.
-# They appear in every client's checklist as ask_client items.
-
