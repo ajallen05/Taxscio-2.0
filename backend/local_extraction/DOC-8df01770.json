@@ -4,8 +4,8 @@
   "source_filename": "1099_k-1_2019.pdf",
   "pdf_type": "digital",
   "extracted_at": "2026-03-27T20:23:48.949676+00:00",
-  "last_updated_at": "2026-03-27T21:06:50.944322+00:00",
-  "document_confidence": 0.941,
+  "last_updated_at": "2026-03-28T05:36:33.395954+00:00",
+  "document_confidence": 0.906,
   "data": {
     "filer_name": "N R CRR AR",
     "filer_address": "8009 PIKE CIR",
@@ -16,7 +16,7 @@
     "payee_city_state_zip": "CAR CITY, CA 67890",
     "payee_tin": null,
     "account_number": null,
-    "tax_year": "2025",
+    "tax_year": 2019,
     "pseid": "45-1230876",
     "box_1a_gross_amount": "$ 29,000",
     "box_1b_card_not_present_transactions": "$ 1,200",
@@ -37,23 +37,52 @@
     "box_5l_december": "$ 1,060",
     "box_6_state": null,
     "box_7_state_id_number": null,
-    "box_8_state_income_tax_withheld": null,
-    "gross_amount_payment_card": "feaf",
-    "payer_tin": "12-3456789"
+    "box_8_state_income_tax_withheld": null
   },
-  "exceptions": [],
+  "exceptions": [
+    {
+      "code": "CY_WRONG_YEAR_UPLOAD",
+      "category": "Cross-Year",
+      "exception": "Prior-Year Form Uploaded as Current",
+      "description": "Field 'tax_year' year 2019 is more than 1 year prior to 2026. Possible prior-year form uploaded in error.",
+      "severity": "WARNING",
+      "handling": "Auto-detect and reroute",
+      "field": "tax_year",
+      "value": 2019
+    },
+    {
+      "code": "FLD_ZERO_VS_BLANK",
+      "category": "Field-Level",
+      "exception": "Zero vs Blank",
+      "description": "1099-K required field 'gross_amount_payment_card' is null or missing.",
+      "severity": "BLOCKING",
+      "handling": "Enforce strict numeric/null distinction",
+      "field": "gross_amount_payment_card",
+      "value": null
+    },
+    {
+      "code": "FLD_ZERO_VS_BLANK",
+      "category": "Field-Level",
+      "exception": "Zero vs Blank",
+      "description": "1099-K required field 'payer_tin' is null or missing.",
+      "severity": "BLOCKING",
+      "handling": "Enforce strict numeric/null distinction",
+      "field": "payer_tin",
+      "value": null
+    }
+  ],
   "field_confidence": {
-    "filer_name": 1.0,
-    "filer_address": 1.0,
-    "filer_city_state_zip": 1.0,
-    "filer_tin": 1.0,
-    "payee_name": 1.0,
-    "payee_address": 1.0,
-    "payee_city_state_zip": 1.0,
-    "payee_tin": 1.0,
-    "account_number": 1.0,
-    "tax_year": 1.0,
-    "pseid": 1.0,
+    "filer_name": 0.97,
+    "filer_address": 0.97,
+    "filer_city_state_zip": 0.97,
+    "filer_tin": 0.97,
+    "payee_name": 0.97,
+    "payee_address": 0.97,
+    "payee_city_state_zip": 0.97,
+    "payee_tin": 0.7,
+    "account_number": 0.7,
+    "tax_year": 0.87,
+    "pseid": 0.97,
     "gross_amount": 0.97,
     "card_not_present_transactions": 0.97,
     "merchant_category_code": 0.97,
@@ -73,9 +102,7 @@
     "december": 0.97,
     "state": 0.7,
     "state_id_number": 0.7,
-    "state_income_tax_withheld": 0.7,
-    "gross_amount_payment_card": 1.0,
-    "payer_tin": 1.0
+    "state_income_tax_withheld": 0.7
   },
   "exception_audit": []
 }

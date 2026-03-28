@@ -1909,6 +1909,8 @@ function extractionMatchesClient(extraction, client) {
 }
 
 function fileMatchesClient(file, result, client) {
+    // Explicit association wins — set when the user picks/creates a client in the modal
+    if (result?.matchedClientId && client?.id && result.matchedClientId === client.id) return true;
     const data = result?.data || result?.extracted_fields;
     return clientIdentityMatchesClient(extractClientIdentity(data), client);
 }
@@ -1933,18 +1935,104 @@ function ledgerClientNameMatches(client, ledgerClientName) {
 // CLIENT MATCH MODAL
 // ═══════════════════════════════════════════════════════════════════════════
 
+/** Flatten one level of nested extraction objects so we can search field names easily. */
+function flattenExtracted(data) {
+    if (!data || typeof data !== 'object') return {};
+    const flat = {};
+    for (const [k, v] of Object.entries(data)) {
+        if (v && typeof v === 'object' && !Array.isArray(v)) {
+            for (const [k2, v2] of Object.entries(v)) {
+                flat[k2] = v2;
+            }
+        } else {
+            flat[k] = v;
+        }
+    }
+    return flat;
+}
+
+/** Pick the first truthy value from a list of field names in obj. */
+function pick(obj, ...keys) {
+    for (const k of keys) {
+        const v = obj[k];
+        if (v && typeof v === 'string' && v.trim()) return v.trim();
+    }
+    return '';
+}
+
+/** Build pre-filled initialData for AddClientForm from the raw extracted fields. */
+function buildInitialData(identity, extractedData) {
+    const d = flattenExtracted(extractedData || {});
+    const init = {};
+
+    // ── Name ─────────────────────────────────────────────────────────────────
+    if (identity?.name) {
+        const parts = identity.name.trim().split(/\s+/);
+        init.entity_type  = 'INDIVIDUAL';
+        init.first_name   = parts[0] || '';
+        init.last_name    = parts.slice(1).join(' ') || '';
+    } else {
+        // Try to infer entity type from extracted data
+        const bizName = pick(d, 'business_name', 'company_name', 'employer_name', 'payer_name', 'entity_name');
+        if (bizName) {
+            init.entity_type  = 'BUSINESS';
+            init.business_name = bizName;
+        }
+    }
+
+    // ── First / Last names if available as separate fields ───────────────────
+    if (!init.first_name) {
+        const first = pick(d, 'first_name', 'taxpayer_first_name', 'employee_first_name', 'recipient_first_name');
+        const last  = pick(d, 'last_name',  'taxpayer_last_name',  'employee_last_name',  'recipient_last_name');
+        if (first || last) {
+            init.entity_type = init.entity_type || 'INDIVIDUAL';
+            init.first_name  = first;
+            init.last_name   = last;
+        }
+    }
+
+    // ── Tax ID / SSN / TIN ───────────────────────────────────────────────────
+    const tin = identity?.tin || pick(d,
+        'ssn', 'tax_id', 'taxpayer_ssn', 'employee_ssn', 'recipient_tin',
+        'payer_tin', 'recipient_ssn', 'filer_ssn', 'ein'
+    );
+    if (tin) init.tax_id = tin;
+
+    // ── Contact ──────────────────────────────────────────────────────────────
+    const email = pick(d, 'email', 'taxpayer_email', 'employee_email', 'recipient_email');
+    if (email) init.email = email;
+
+    const phone = pick(d, 'phone', 'phone_number', 'taxpayer_phone', 'employee_phone', 'recipient_phone');
+    if (phone) init.phone = phone;
+
+    // ── Address ──────────────────────────────────────────────────────────────
+    const addr1 = pick(d,
+        'address', 'address_line1', 'street_address',
+        'employee_address', 'taxpayer_address', 'recipient_address',
+        'employee_street_address', 'taxpayer_street_address'
+    );
+    if (addr1) init.address_line1 = addr1;
+
+    const addr2 = pick(d, 'address_line2', 'apt', 'suite');
+    if (addr2) init.address_line2 = addr2;
+
+    const city = pick(d, 'city', 'employee_city', 'taxpayer_city', 'recipient_city');
+    if (city) init.city = city;
+
+    const state = pick(d, 'state', 'employee_state', 'taxpayer_state', 'recipient_state');
+    if (state) init.state = state;
+
+    const zip = pick(d, 'zip', 'zip_code', 'postal_code', 'employee_zip', 'taxpayer_zip', 'recipient_zip');
+    if (zip) init.zip_code = zip;
+
+    return init;
+}
+
 function ClientMatchModal({ modal, apiUrl, onDismiss, onAssociated }) {
     const [showAddForm, setShowAddForm] = useState(false);
-    const { identity, match, formType } = modal;
+    const { identity, match, formType, extractedData } = modal;
 
-    const initialData = {};
-    if (identity?.name) {
-        const parts = identity.name.trim().split(' ');
-        initialData.entity_type = 'INDIVIDUAL';
-        initialData.first_name = parts[0] || '';
-        initialData.last_name = parts.slice(1).join(' ') || '';
-    }
-    if (identity?.tin) initialData.tax_id = identity.tin;
+    const initialData = buildInitialData(identity, extractedData);
 
     const overlayStyle = {
         position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 9000,
@@ -1964,17 +2052,22 @@ function ClientMatchModal({ modal, apiUrl, onDismiss, onAssociated }) {
                     <>
                         <div style={{ marginBottom: 16 }}>
                             <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>
-                                {match ? '✓ Client found in database' : 'Client not found'}
+                                {match ? '✓ Client found in database' : (identity.name || identity.tin) ? 'Client not found' : 'Assign to a client'}
                             </div>
                             {match ? (
                                 <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
                                     We found <strong>{identity.name}</strong> in your client database.
                                     Associate this <strong>{formType}</strong> with them?
                                 </p>
-                            ) : (
+                            ) : (identity.name || identity.tin) ? (
                                 <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
                                     <strong>{identity.name || identity.tin}</strong> is not in your database.
                                     Would you like to add them as a new client?
+                                </p>
+                            ) : (
+                                <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
+                                    No client name was detected in this document.
+                                    Would you like to add a new client for this <strong>{formType}</strong>?
                                 </p>
                             )}
                             {identity.tin && (
@@ -2005,7 +2098,7 @@ function ClientMatchModal({ modal, apiUrl, onDismiss, onAssociated }) {
                     <>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
                             <div style={{ fontWeight: 700, fontSize: 13 }}>
-                                Add New Client — {identity.name}
+                                Add New Client{identity.name ? ` — ${identity.name}` : ''}
                             </div>
                             <div style={{ display: 'flex', gap: 8 }}>
                                 <button
@@ -4638,24 +4731,26 @@ export default function App() {
                         }),
                     }).catch(() => {/* non-blocking */});
 
-                    // Client auto-match: identify client from extracted fields
-                    const identity = extractClientIdentity(finalData.data);
-                    if (identity?.name || identity?.tin) {
-                        try {
-                            const clientsRes = await fetch(`${apiUrl}/clients?limit=500`);
-                            if (clientsRes.ok) {
-                                const allClients = await clientsRes.json();
-                                const match = allClients.find(c => {
+                    // Client auto-match: always show modal so user can assign or add a client
+                    const identity = extractClientIdentity(finalData.data) || { name: null, tin: null };
+                    let autoMatch = null;
+                    try {
+                        const clientsRes = await fetch(`${apiUrl}/clients?limit=500`);
+                        if (clientsRes.ok) {
+                            const allClients = await clientsRes.json();
+                            if (identity.name || identity.tin) {
+                                autoMatch = allClients.find(c => {
                                     const fullName = c.entity_type === 'INDIVIDUAL'
                                         ? `${c.first_name || ''} ${c.last_name || ''}`.trim()
                                         : c.business_name || c.trust_name || '';
                                     return (identity.name && fullName.toLowerCase() === identity.name.toLowerCase())
                                         || (identity.tin && c.tax_id === identity.tin);
-                                });
-                                setClientMatchModal({ fileName: item.file.name, formType, identity, match: match || null });
+                                }) || null;
                             }
-                        } catch { /* silently skip if client DB unavailable */ }
-                    }
+                        }
+                    } catch { /* client DB unavailable — modal still shows with no match */ }
+                    // Always open the modal regardless of whether client fetch succeeded
+                    setClientMatchModal({ fileName: item.file.name, formType, identity, match: autoMatch, extractedData: finalData.data || {} });
 
                 } catch (err) {
                     cur[i].status = 'error';
@@ -4853,25 +4948,68 @@ export default function App() {
                         apiUrl={apiUrl}
                         onDismiss={() => setClientMatchModal(null)}
                         onAssociated={async (clientId) => {
+                            const fileResult = results[clientMatchModal.fileName] || {};
+
+                            // Resolve client name: use extracted identity, or fetch from DB
+                            let resolvedClientName = clientMatchModal.identity?.name || '';
+                            if (!resolvedClientName) {
+                                try {
+                                    const cr = await fetch(`${apiUrl}/clients/${clientId}`);
+                                    if (cr.ok) {
+                                        const cd = await cr.json();
+                                        resolvedClientName = cd.entity_type === 'INDIVIDUAL'
+                                            ? `${cd.first_name || ''} ${cd.last_name || ''}`.trim()
+                                            : cd.business_name || cd.trust_name || '';
+                                    }
+                                } catch { /* non-blocking */ }
+                            }
+
                             setResults(prev => ({
                                 ...prev,
                                 [clientMatchModal.fileName]: {
                                     ...prev[clientMatchModal.fileName],
                                     matchedClientId: clientId,
-                                    matchedClientName: clientMatchModal.identity.name,
+                                    matchedClientName: resolvedClientName,
                                 },
                             }));
                             setClientMatchModal(null);
 
-                            // Backfill client_id on ledger rows that were created without it
-                            if (clientMatchModal.identity?.name) {
+                            // Submit document to ledger so it persists across page refreshes
+                            try {
+                                const extractedFields = fileResult.data || fileResult.extracted_fields || {};
+                                const taxYear = extractedFields?.tax_year
+                                    ? (typeof extractedFields.tax_year === 'number'
+                                        ? extractedFields.tax_year
+                                        : parseInt(extractedFields.tax_year) || new Date().getFullYear())
+                                    : new Date().getFullYear();
+                                await fetch(`${apiUrl}/ledger/submit`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                        client_name:        resolvedClientName || clientMatchModal.fileName,
+                                        client_id:          clientId,
+                                        document_type:      clientMatchModal.formType || 'Unknown',
+                                        provider:           'AI Extraction',
+                                        description:        clientMatchModal.fileName,
+                                        source:             'Ingestion Hub',
+                                        tax_year:           taxYear,
+                                        stage:              'Document Submission',
+                                        status:             (fileResult.exceptions?.length > 0) ? 'EXCEPTION' : 'VALIDATED',
+                                        confidence_score:   fileResult.document_confidence ?? null,
+                                        extraction_json_path: fileResult.extraction_json_path || null,
+                                    }),
+                                });
+                            } catch { /* non-blocking — local display already updated */ }
+
+                            // Backfill client_id on any pre-existing ledger rows for this client name
+                            if (resolvedClientName) {
                                 try {
                                     await fetch(`${apiUrl}/ledger/associate-client`, {
                                         method: 'PATCH',
                                         headers: { 'Content-Type': 'application/json' },
                                         body: JSON.stringify({
-                                            client_id: clientId,
-                                            client_name: clientMatchModal.identity.name,
+                                            client_id:     clientId,
+                                            client_name:   resolvedClientName,
                                             document_type: clientMatchModal.formType || undefined,
                                         }),
                                     });
@@ -4881,7 +5019,6 @@ export default function App() {
                             // If this is a 1040, trigger FDR to derive the document checklist
                             if ((clientMatchModal.formType || '').toUpperCase() === '1040') {
                                 try {
-                                    const fileResult = results[clientMatchModal.fileName] || {};
                                     const extractedFields = fileResult.data || fileResult.extracted_fields || fileResult.raw_normalized_json || {};
                                     const fieldConfidenceMap = fileResult.field_confidence || {};
                                     const docType = (fileResult.pdf_type || 'digital') === 'digital' ? 'digital' : 'scanned';
@@ -4896,7 +5033,6 @@ export default function App() {
                                             document_type: docType,
                                         }),
                                     });
-                                    // Signal PageClients to reload the checklist
                                     setChecklistReloadTrigger(t => t + 1);
                                 } catch { /* FDR is non-blocking; association still succeeded */ }
                             }

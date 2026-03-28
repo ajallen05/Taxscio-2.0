@@ -244,6 +244,7 @@ function validate(form) {
     }
 
     if (!form.lifecycle_stage) errors.lifecycle_stage = 'Lifecycle stage is required';
+    if (!form.tax_id?.trim()) errors.tax_id = 'Tax ID is required';
 
     if (form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) {
         errors.email = 'Invalid email address';
@@ -457,8 +458,8 @@ export default function AddClientForm({ apiUrl, onSuccess, onCancel, initialData
 
             {/* ══ Section 3: Tax Information ══ */}
             <FormSection title="Tax Information" icon="🧾">
-                <Field label="Tax ID">
-                    <TextInput value={form.tax_id} onChange={set('tax_id')} placeholder="PAN / SSN / EIN" />
+                <Field label="Tax ID" required error={errors.tax_id}>
+                    <TextInput value={form.tax_id} onChange={set('tax_id')} placeholder="PAN / SSN / EIN" error={errors.tax_id} />
                 </Field>
                 <Field label="Residency Status">
                     <SelectInput
